@@ -1,0 +1,5 @@
+# Private, non-committed project material (data exports, personal config, notes)
+.local/
+
+# OS artifacts
+.DS_Store
