@@ -1,0 +1,15 @@
+DROP TABLE IF EXISTS import_runs;
+DROP TABLE IF EXISTS budgets;
+DROP TABLE IF EXISTS net_worth_snapshots;
+DROP TABLE IF EXISTS balance_snapshots;
+DROP TABLE IF EXISTS loan_terms;
+DROP TABLE IF EXISTS credit_terms;
+DROP TABLE IF EXISTS txn_provider_refs;
+DROP TABLE IF EXISTS transactions;
+DROP TABLE IF EXISTS recurring_items;
+DROP TABLE IF EXISTS entity_rules;
+DROP TABLE IF EXISTS category_mappings;
+DROP TABLE IF EXISTS categories;
+DROP TABLE IF EXISTS accounts;
+DROP TABLE IF EXISTS provider_items;
+DROP TABLE IF EXISTS entities;

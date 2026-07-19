@@ -8,8 +8,9 @@ Full architecture: `docs/moneta-plan.md`.
 
 ## Current Goal
 
-Phase 1: core schema + provider interface + Plaid provider (Link flow, `/transactions/sync`, liabilities) against Plaid Sandbox.
-Design is approved; implementation has not started.
+Phase 1 final review.
+The schema, provider interface, Plaid provider, Sandbox flow, and post-review hardening stack are implemented and passing, but remain uncommitted.
+Phase 2 AXI CLI and REST work starts after final maintainer approval.
 
 ## Working Rules
 
@@ -34,10 +35,10 @@ Design is approved; implementation has not started.
 
 ## Important Files
 
-- `README.md` — human-facing overview.
-- `docs/product-spec.md` — product frame: MVP, current priority, non-goals.
-- `docs/moneta-plan.md` — approved architecture: schema, provider interface, AXI commands, phases.
-- `docs/decisions/` — ADRs; decisions future agents should preserve.
+- `README.md` - human-facing overview.
+- `docs/product-spec.md` - product frame: MVP, current priority, non-goals.
+- `docs/moneta-plan.md` - approved architecture: schema, provider interface, AXI commands, phases.
+- `docs/decisions/` - ADRs; decisions future agents should preserve.
 
 ## Done Means
 
@@ -48,6 +49,6 @@ Design is approved; implementation has not started.
 ## Ignore For Now
 
 - Investment holdings/positions (balance-level tracking only in v1).
-- RocketMoney CSV importer implementation (interface stub only).
+- RocketMoney CSV importer implementation (Phase 2+; no stub exists yet).
 - Plaid webhooks, whole-database encryption, multi-currency, brokerages.
-- Any human-facing web UI.
+- Human-facing web UI (roadmap item, post-v1; agent interfaces come first).

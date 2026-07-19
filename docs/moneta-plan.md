@@ -1,6 +1,6 @@
 # Moneta - Architecture Plan
 
-Status: approved design, pre-implementation.
+Status: approved design, Phase 1 implementation and post-review hardening complete pending final approval.
 Moneta is a self-hosted personal + business finance data hub whose primary consumer is an AI agent, not a human UI.
 It ingests financial data from pluggable providers, normalizes it into a canonical model in SQLite, and exposes it through a token-efficient AXI CLI (TOON output) and a small REST API.
 
@@ -8,6 +8,7 @@ It ingests financial data from pluggable providers, normalizes it into a canonic
 
 - Local-first and self-hosted: data never leaves the machine except via the CLI/API the owner controls and outbound calls to Plaid (the only permitted third-party dependency, isolated inside the Plaid provider).
 - Agent-ergonomic access following the [kunchenguid/axi](https://github.com/kunchenguid/axi) design principles, with [TOON](https://github.com/toon-format/toon) output on stdout.
+- Agent-harness agnostic: the CLI and REST surfaces assume nothing about which agent framework consumes them; any harness with shell access or HTTP works.
 - Pluggable providers: no provider-specific fields in the core model, idempotent imports, transaction-level dedup.
 - Open source: personal data (exports, custom categories, local mapping config) stays out of the repo; committed docs and fixtures use the neutral default taxonomy and fake data only.
 
@@ -35,12 +36,12 @@ Never hardcoded, never logged, never returned by any command or endpoint.
 moneta/
   cmd/moneta/            main.go (router, flag parsing)
   internal/canon/        canonical DTOs + Provider interface (no deps)
-  internal/core/         ingest: dedup, category map, entity rules
-  internal/store/        database/sql, embedded SQL migrations
+  internal/core/         ingest + sync orchestration; rules deferred
+  internal/store/        database/sql, migrations, entity bootstrap
   internal/providers/
     plaid/               plaid-go, Link page via embed, ONLY Plaid-touching code
-    manual/              JSON file + write path
-    rmcsv/               stub (interface-conforming, no implementation)
+    manual/              Phase 2+ JSON/write provider, not yet present
+    rmcsv/               Phase 2+ CSV provider, not yet present
   internal/analytics/    precomputed views, refreshed at sync
   internal/toon/         TOON encoder
   internal/cli/          AXI command implementations
@@ -68,15 +69,19 @@ budgets · category_mappings · entity_rules · import_runs
 - **loan_terms**: `apr`, `min_payment_cents`, `origination_cents`, `maturity_date`.
 - **balance_snapshots**: one row per account per sync day; feeds net worth and utilization history.
 - **transactions**: `date` (TEXT ISO), `amount_cents` (signed), `merchant_raw`, `merchant_norm`, `category_id`, `status` (pending|posted), `tags`, `notes`, `recurring_id?`, `is_transfer`, `excluded`, `dedup_hash`.
-- **txn_provider_refs**: `provider`, `provider_txn_id`, `pending_txn_id`; Plaid dedups on native ids from `/transactions/sync`; id-less providers (CSV) fall back to `dedup_hash` (date + amount + merchant_norm + account) with a ±3-day fuzzy window for pending→posted drift.
+- **txn_provider_refs**: `provider`, `provider_txn_id`, `pending_txn_id`; Plaid dedups on native ids from `/transactions/sync`; id-less providers (CSV) fall back to `dedup_hash` (date + amount + merchant_norm + account) with a ±3-day fuzzy window for pending→posted drift; the hash excludes mutable fields (notably `status`), and a fuzzy match updates the existing row, never inserts a second one (see Binding implementation requirements).
 - **categories**: `name`, `parent_id?`, `kind` (income|expense|transfer|ignore); `transfer` rows (card payments, internal transfers) are auto-excluded from spending analytics, never deleted.
 - **category_mappings**: `provider`, `source_category`, `category_id`; the user-overridable mapping layer.
-- **entity_rules**: ordered rules (`account?`, `category?`, `merchant_pattern?`) → entity, applied at ingest; account default is the last rule.
+- **entity_rules**: the schema ships in Phase 1, but rule creation and application are Phase 2+.
+  Phase 1 is single-entity: ingest accepts one default entity, assigns it to accounts, and transactions inherit their account's entity.
+  No entity rules are seeded or written yet.
+  Before merchant-pattern routing is implemented, revisit the composite `(account_id, entity_id)` foreign key, which currently prevents a transaction from diverging from its account's entity.
 - **recurring_items**: `kind` (subscription|bill|income), `cadence`, `expected_cents`, `next_expected_date`, `drift_pct`, `source` (detected|manual); one table covers subscriptions, bills, and income streams.
 - **provider_items**: `item_id`, `institution`, `access_token_enc` (AES-GCM blob), `status` (ok|login_required|error), `sync_cursor`, `last_synced_at`.
 - **net_worth_snapshots**: per entity (and combined) per day: assets, liabilities, net, per-type breakdown.
 - **budgets** (optional v1): entity, category, month, target.
-- **import_runs**: audit trail per sync/import.
+- **import_runs**: successful sync audit rows commit atomically with their batches.
+  Failed-run recording with redacted error details is deferred to the Phase 2 service and CLI layer.
 
 ### Categories: default taxonomy
 
@@ -161,11 +166,28 @@ type Provider interface {
 }
 ```
 
-### Providers (v1)
+### Provider roadmap
 
 - **plaid** (primary): Link flow served from the binary via `embed` on localhost; `/transactions/sync` (cursor-based, idempotent); balances; `/liabilities/get` where the institution supports it (coverage varies by institution); Item error states like `ITEM_LOGIN_REQUIRED` surface as `reconnection_needed` in `moneta status`, never silent failure; Sandbox for development, switchable to production via env vars; webhooks deferred, manual/scheduled sync in v1.
-- **manual**: structured JSON file plus `moneta add` writes, for assets (vehicles, property), unsupported institutions, and anything a provider does not cover (including loan terms when liabilities data is thin).
-- **rmcsv**: stub only in v1; future implementation bulk-imports RocketMoney CSV exports and matches accounts so history merges with Plaid data without duplicates; adding it touches only the provider registry.
+- **manual** (Phase 2+; not yet present): structured JSON file plus `moneta add` writes, for assets (vehicles, property), unsupported institutions, and anything a provider does not cover (including loan terms when liabilities data is thin).
+- **rmcsv** (Phase 2+; not yet present): a future implementation will bulk-import RocketMoney CSV exports and match accounts so history merges with Plaid data without duplicates.
+
+### Phase 2 architecture carry-forwards
+
+These findings are inert in the current USD-only Plaid path, but must be resolved when the named consumer arrives.
+
+- **Token-less providers:** `provider_items.access_token_enc` is required and core ingestion requires a provider item, so manual and CSV providers cannot yet represent a connection without fabricating ciphertext.
+  Revisit the credential storage shape or nullable constraint before either provider lands.
+- **Dedup strategy:** `Capabilities()` is not consumed by core, while native-ID behavior is inferred from whether each transaction carries `ProviderTxnID`.
+  Add a declared native-ID capability or dedup strategy before the CSV provider introduces unstable or partially populated IDs.
+- **Liability kind:** `canon.Liability` does not carry its source kind, so core infers credit versus loan terms from account type and cannot populate mortgage origination or maturity fields.
+  Extend the canonical contract before mortgage, HELOC, margin-loan, or Phase 3 amortization support.
+- **Balance currency:** `canon.Balance` has no currency and balance ingestion currently writes the USD literal.
+  Carry the account currency or remove the redundant snapshot column before multi-currency work.
+- **Provider versus user ownership:** `excluded` remains sync-owned and derived from category kind.
+  The Phase 2 change that adds `moneta tag` must decide whether provider recategorization or user edits win for `category_id` and `entity_id`; per-column override flags are the likely schema design.
+- **Single-entity bootstrap:** migrations intentionally seed no personal entity.
+  Phase 1 hardening adds a product-level bootstrap and sync orchestrator for one deterministic personal entity; multi-entity routing remains coupled to the deferred `entity_rules` work.
 
 ## AXI CLI commands
 
@@ -221,6 +243,36 @@ Net worth snapshots are computed at sync time (scheduled daily).
 - Access tokens AES-GCM encrypted at rest, never logged (redaction filter as second line of defense), never exposed via any response.
 - No telemetry; no third-party calls outside the Plaid provider.
 
+## Binding implementation requirements
+
+These three requirements are binding for Phase 1 and beyond; code that violates them is a bug regardless of tests passing.
+
+### 1. Money: integer cents, never floats
+
+- All monetary amounts are `int64` cents in SQLite and in every internal Go struct; no `float64` money anywhere in the core.
+- Every string money input (CLI flags, REST API, manual/JSON provider) parses to cents without ever passing through a float: split on the decimal point with digit validation.
+  `$10.50`, `10.50`, `10.5`, and `-3.07` all parse correctly; currency symbols and negatives are handled; more than 2 decimal places is rejected.
+- Plaid boundary: `plaid-go` returns amounts as `float64`.
+  Convert to cents exactly once, at the Plaid provider boundary, using round-half-away-from-zero.
+  Unit tests must cover the known float-precision traps (e.g., `4.35`, `1.005`, and similar values that misbehave under naive `*100` truncation).
+- Cents convert back to display strings only at the output boundary (TOON/REST formatting).
+
+### 2. Dedup survives pending → posted transitions
+
+- The transaction `dedup_hash` excludes mutable fields - specifically `status` - so a pending transaction that later posts matches its earlier record instead of duplicating.
+- Plaid path: ID matching is primary.
+  Use `transaction_id`; when a posted transaction arrives carrying a `pending_transaction_id`, update/replace the pending row it references.
+  Fuzzy logic is a fallback, never the main mechanism.
+- ID-less providers (the future RocketMoney CSV import): apply the ±3-day fuzzy window on (amount, account, normalized merchant) to catch pending→posted date shifts.
+  On a fuzzy match, update the existing row - never insert a second one.
+- Required test case: a pending transaction appears, then posts 2 days later with a shifted date and identical amount → exactly one row exists afterward.
+
+### 3. REST server binds to loopback only
+
+- The `net/http` listener binds explicitly to `127.0.0.1:<port>` - never `0.0.0.0:<port>` and never the bare `:<port>` form, which Go treats as all interfaces.
+- The bind address is configurable, but it defaults to loopback and requires an explicit `--listen` flag plus a logged warning to bind anything broader.
+- The bound address is logged at startup so exposure is always auditable.
+
 ## Deployment
 
 Recommended: native binary with a scheduled sync via launchd (macOS) or cron/systemd timers (Linux).
@@ -237,8 +289,10 @@ Each phase delivers runnable code and README updates (setup, building or downloa
 
 ## Deferred / roadmap
 
+- Human web UI, for owners who want to view and review their finances directly rather than only through an agent.
+  It will consume the same service layer / REST API, so the current architecture needs no changes to support it; agent-first remains the primary interface.
 - Investment holdings and positions (Plaid investments product); v1 tracks investment accounts at balance level only.
-- RocketMoney CSV importer implementation (provider stub exists from day one).
+- RocketMoney CSV importer implementation (no provider stub exists yet).
 - Plaid webhooks for push-driven sync.
 - Whole-database encryption (deliberate follow-up decision if ever needed; not silently added).
 - Brokerage support, if and when needed.

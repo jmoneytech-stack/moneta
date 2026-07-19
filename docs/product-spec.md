@@ -7,6 +7,7 @@ Architecture details live in [moneta-plan.md](moneta-plan.md); this file is the 
 A self-hosted finance data hub for people who want their AI agent to answer money questions.
 It ingests accounts, transactions, and liabilities from pluggable providers, normalizes them into one canonical SQLite model split across personal and business entities, and serves them through a token-efficient CLI built for agent consumption.
 Audience: technical self-hosters running local AI agents; single-owner deployments.
+Agent-harness agnostic: built and verified with one agent harness first, but any harness that can run shell commands or call the REST API is a first-class consumer.
 
 ## MVP
 
@@ -14,11 +15,13 @@ Connect real institutions through Plaid, sync transactions/balances/liabilities 
 
 ## Current Priority
 
-Phase 1: core schema + provider interface + Plaid provider (Link flow, `/transactions/sync`, liabilities), tested against Plaid Sandbox.
+Phase 1 final review.
+The core schema, provider interface, Plaid Link flow, transaction sync, liabilities fetch, and post-review hardening stack are implemented and verified.
+Phase 2 AXI CLI and REST work starts after final maintainer approval.
 
 ## Non-Goals
 
-- Human-facing web UI or dashboards.
+- Human-facing web UI in v1 (roadmap item, not current scope; see Milestones).
 - Multi-user or hosted/SaaS operation.
 - Investment holdings/positions in v1 (balances only; deferred by decision).
 - Multi-currency in v1 (USD only; schema keeps a currency field).
@@ -34,7 +37,8 @@ Phase 1: core schema + provider interface + Plaid provider (Link flow, `/transac
 
 ## Milestones
 
-1. Phase 1 — schema + provider interface + Plaid provider, verified against Sandbox.
-2. Phase 2 — AXI CLI + REST API, verified by an agent running real command flows.
-3. Phase 3 — precomputed analytics views.
-4. Phase 4 — recurring detection + anomaly detection.
+1. Phase 1 - schema + provider interface + Plaid provider, verified against Sandbox.
+2. Phase 2 - AXI CLI + REST API, verified by an agent running real command flows.
+3. Phase 3 - precomputed analytics views.
+4. Phase 4 - recurring detection + anomaly detection.
+5. Post-v1 - optional human web UI on top of the REST API, for viewing and reviewing finances without an agent.
