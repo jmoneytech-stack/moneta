@@ -15,9 +15,8 @@ Connect real institutions through Plaid, sync transactions/balances/liabilities 
 
 ## Current Priority
 
-Phase 1 final review.
-The core schema, provider interface, Plaid Link flow, transaction sync, liabilities fetch, and post-review hardening stack are implemented and verified.
-Phase 2 AXI CLI and REST work starts after final maintainer approval.
+Phase 1 implementation and post-review hardening are complete.
+Phase 2 AXI CLI and REST work is next, beginning with the documented single-row poison sync blocker and production sync wiring.
 
 ## Non-Goals
 

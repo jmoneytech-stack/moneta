@@ -1,6 +1,6 @@
 # Moneta - Architecture Plan
 
-Status: approved design, Phase 1 implementation and post-review hardening complete pending final approval.
+Status: approved design, Phase 1 implementation and post-review hardening complete; Phase 2 AXI CLI and REST work is next.
 Moneta is a self-hosted personal + business finance data hub whose primary consumer is an AI agent, not a human UI.
 It ingests financial data from pluggable providers, normalizes it into a canonical model in SQLite, and exposes it through a token-efficient AXI CLI (TOON output) and a small REST API.
 
@@ -188,6 +188,14 @@ These findings are inert in the current USD-only Plaid path, but must be resolve
   The Phase 2 change that adds `moneta tag` must decide whether provider recategorization or user edits win for `category_id` and `entity_id`; per-column override flags are the likely schema design.
 - **Single-entity bootstrap:** migrations intentionally seed no personal entity.
   Phase 1 hardening adds a product-level bootstrap and sync orchestrator for one deterministic personal entity; multi-entity routing remains coupled to the deferred `entity_rules` work.
+
+### Phase 2 sync blocker: single-row poison must not wedge an Item
+
+The current Plaid provider treats an unsupported currency, an unofficial-currency record, or a similar row-local normalization failure as an error for the entire `Provider.Sync` call.
+The batch is then discarded and its cursor is never applied, so every retry encounters the same record and the Item can remain permanently wedged.
+This is not user-reachable until a production sync entrypoint exists and does not block the Phase 1 freeze.
+Before `moneta sync` ships, unsupported or malformed individual records must be skipped and flagged while valid records continue and the cursor can advance.
+Apply the same policy to other row-local poison paths, including unexpected account types and liability routing failures, without expanding the product into multi-currency support.
 
 ## AXI CLI commands
 

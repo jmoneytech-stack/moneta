@@ -8,9 +8,9 @@ Full architecture: `docs/moneta-plan.md`.
 
 ## Current Goal
 
-Phase 1 final review.
-The schema, provider interface, Plaid provider, Sandbox flow, and post-review hardening stack are implemented and passing, but remain uncommitted.
-Phase 2 AXI CLI and REST work starts after final maintainer approval.
+Phase 1 implementation and post-review hardening are complete.
+Phase 2 AXI CLI and REST work is next.
+It begins with the single-row poison sync blocker documented in `docs/moneta-plan.md`; do not ship a production sync entrypoint until that blocker is fixed.
 
 ## Working Rules
 
