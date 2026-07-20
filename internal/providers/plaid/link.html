@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connect Moneta</title>
+  <style nonce="{{.CSPNonce}}">
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0f172a; color: #e2e8f0; }
+    main { width: min(32rem, calc(100% - 3rem)); padding: 2rem; border: 1px solid #334155; border-radius: 1rem; background: #1e293b; box-shadow: 0 1rem 3rem rgb(0 0 0 / 25%); }
+    h1 { margin-top: 0; }
+    p { line-height: 1.5; color: #cbd5e1; }
+    button { width: 100%; padding: 0.8rem 1rem; border: 0; border-radius: 0.6rem; background: #38bdf8; color: #082f49; font: inherit; font-weight: 700; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: 0.65; }
+    #status { min-height: 1.5rem; margin-bottom: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Connect an institution</h1>
+    <p>Plaid Link will open securely in this local page.</p>
+    <button id="connect" type="button" disabled>Loading Plaid Link...</button>
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+  <script nonce="{{.CSPNonce}}" src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+  <script nonce="{{.CSPNonce}}">
+    "use strict";
+    const button = document.getElementById("connect");
+    const status = document.getElementById("status");
+    const sessionToken = {{.SessionToken}};
+    const handler = Plaid.create({
+      token: {{.LinkToken}},
+      onLoad: () => {
+        button.disabled = false;
+        button.textContent = "Open Plaid Link";
+        handler.open();
+      },
+      onSuccess: async (publicToken, metadata) => {
+        button.disabled = true;
+        status.textContent = "Saving the connection locally...";
+        const institution = metadata && metadata.institution ? metadata.institution.name : "";
+        try {
+          const response = await fetch("/complete", {
+            method: "POST",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Moneta-Link-Session": sessionToken
+            },
+            body: JSON.stringify({ public_token: publicToken, institution })
+          });
+          if (!response.ok) {
+            throw new Error("link completion failed");
+          }
+          status.textContent = "Institution connected. You can close this window.";
+          button.textContent = "Connected";
+        } catch (_) {
+          status.textContent = "Could not save the connection. Return to your terminal and try again.";
+          button.disabled = false;
+          button.textContent = "Open Plaid Link";
+        }
+      },
+      onExit: () => {
+        status.textContent = "No institution was connected.";
+      }
+    });
+    button.addEventListener("click", () => handler.open());
+  </script>
+</body>
+</html>

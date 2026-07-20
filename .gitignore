@@ -3,3 +3,11 @@
 
 # OS artifacts
 .DS_Store
+
+# Local SQLite data and sidecar files
+*.db
+*.db-shm
+*.db-wal
+
+# Local build output
+/moneta
