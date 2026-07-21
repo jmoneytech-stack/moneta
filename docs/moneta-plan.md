@@ -144,7 +144,14 @@ type SyncBatch struct {
     Balances    []Balance
     Liabilities []Liability
     NextCursor  string   // core persists this; providers stay stateless
+    Skipped     []SkippedRecord // row-local poison dropped with redacted reasons
 }
+
+// SkippedRecord is one dropped row: Kind (account|transaction|balance|liability),
+// ID (opaque provider id), Reason (unsupported_currency | unsupported_account_type |
+// malformed_record | account_skipped), and a short static Detail (a currency or
+// account type code). It never carries amounts, merchants, account names, or
+// credentials. SyncResult.Skipped merges provider and ingest skip lists.
 
 type Capability uint8
 const (
@@ -189,13 +196,14 @@ These findings are inert in the current USD-only Plaid path, but must be resolve
 - **Single-entity bootstrap:** migrations intentionally seed no personal entity.
   Phase 1 hardening adds a product-level bootstrap and sync orchestrator for one deterministic personal entity; multi-entity routing remains coupled to the deferred `entity_rules` work.
 
-### Phase 2 sync blocker: single-row poison must not wedge an Item
+### Phase 2 sync policy: single-row poison must not wedge an Item (resolved)
 
-The current Plaid provider treats an unsupported currency, an unofficial-currency record, or a similar row-local normalization failure as an error for the entire `Provider.Sync` call.
-The batch is then discarded and its cursor is never applied, so every retry encounters the same record and the Item can remain permanently wedged.
-This is not user-reachable until a production sync entrypoint exists and does not block the Phase 1 freeze.
-Before `moneta sync` ships, unsupported or malformed individual records must be skipped and flagged while valid records continue and the cursor can advance.
-Apply the same policy to other row-local poison paths, including unexpected account types and liability routing failures, without expanding the product into multi-currency support.
+Row-local normalization failures (unsupported or unofficial currency, unexpected account type, malformed fields) no longer fail `Provider.Sync`.
+The provider skips the offending record, records it in `SyncBatch.Skipped` (kind, stable reason code, redacted detail; never amounts, merchants, or names), and returns a batch whose cursor can advance.
+Records referencing a skipped account are dropped with an `account_skipped` reason so they cannot fail ingest.
+Core ingest applies the same policy where routing allows it: a liability for an account type with no terms table is skipped and reported via `IngestResult.Skipped` instead of rolling the batch back.
+`core.SyncProviderItem` merges both skip lists into `SyncResult.Skipped` for the CLI and REST layer to surface.
+This is not multi-currency support: unsupported-currency rows are skipped, never converted.
 
 ## AXI CLI commands
 

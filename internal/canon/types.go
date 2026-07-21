@@ -79,8 +79,47 @@ type ConnectionStatus struct {
 	Detail      string
 }
 
+// RecordKind identifies which sync collection a skipped record came from.
+type RecordKind string
+
+const (
+	RecordKindAccount     RecordKind = "account"
+	RecordKindTransaction RecordKind = "transaction"
+	RecordKindBalance     RecordKind = "balance"
+	RecordKindLiability   RecordKind = "liability"
+)
+
+// SkipReason is a stable, machine-readable explanation for a skipped record.
+type SkipReason string
+
+const (
+	// SkipUnsupportedCurrency covers non-USD and unofficial-currency records.
+	SkipUnsupportedCurrency SkipReason = "unsupported_currency"
+	// SkipUnsupportedAccountType covers accounts and liabilities whose type
+	// has no canonical mapping.
+	SkipUnsupportedAccountType SkipReason = "unsupported_account_type"
+	// SkipMalformedRecord covers records with invalid or missing fields.
+	SkipMalformedRecord SkipReason = "malformed_record"
+	// SkipAccountSkipped covers records dropped because their account was
+	// skipped earlier in the same batch.
+	SkipAccountSkipped SkipReason = "account_skipped"
+)
+
+// SkippedRecord describes one provider record dropped during sync or ingest.
+// It never carries raw provider payloads: no amounts, merchant names, account
+// names, or credentials - only opaque identifiers and static reason codes.
+type SkippedRecord struct {
+	Kind   RecordKind
+	ID     string // provider identifier, when the record has one
+	Reason SkipReason
+	Detail string // brief static detail, e.g. a currency or account type code
+}
+
 // SyncBatch is one incremental provider response. Providers are stateless;
 // callers persist NextCursor only after successfully applying the full batch.
+// Single-row poison (unsupported currency, unexpected account type, malformed
+// fields) must not fail the batch: providers skip the record, record it in
+// Skipped, and still return a batch whose cursor can advance.
 type SyncBatch struct {
 	Accounts    []Account
 	Added       []Transaction
@@ -89,4 +128,5 @@ type SyncBatch struct {
 	Balances    []Balance
 	Liabilities []Liability
 	NextCursor  string
+	Skipped     []SkippedRecord
 }

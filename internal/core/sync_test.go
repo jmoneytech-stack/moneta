@@ -67,7 +67,7 @@ func TestSyncProviderItemBootstrapsFreshDatabaseAndAppliesBatch(t *testing.T) {
 		NextCursor: "cursor-1",
 	}}
 	var builtAccessToken string
-	if err := SyncProviderItem(
+	if _, err := SyncProviderItem(
 		ctx,
 		db,
 		cipher,
@@ -132,7 +132,7 @@ func TestSyncProviderItemReturnsExistingCursorSentinel(t *testing.T) {
 		t.Fatalf("advance provider Item cursor: %v", err)
 	}
 
-	err := SyncProviderItem(
+	_, err := SyncProviderItem(
 		ctx,
 		db,
 		cipher,
@@ -151,7 +151,7 @@ func TestSyncProviderItemRejectsInvalidCiphertextBeforeProviderBuild(t *testing.
 	item.AccessTokenEnc = []byte{1, 2, 3}
 	builderCalled := false
 
-	err := SyncProviderItem(
+	_, err := SyncProviderItem(
 		context.Background(),
 		db,
 		cipher,
@@ -204,7 +204,7 @@ func TestSyncProviderItemZeroizesPlaintextOnSuccessAndFailures(t *testing.T) {
 			if test.nilBatch {
 				batch = nil
 			}
-			err := syncProviderItemWithPlaintext(
+			_, err := syncProviderItemWithPlaintext(
 				ctx,
 				db,
 				item,
@@ -231,6 +231,67 @@ func TestSyncProviderItemZeroizesPlaintextOnSuccessAndFailures(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSyncProviderItemSurfacesProviderAndIngestSkips(t *testing.T) {
+	db, cipher, item := newSyncTestItem(t)
+	provider := &fakeSyncProvider{batch: &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "checking-1",
+			Name:              "Test Checking",
+			Type:              canon.AccountTypeChecking,
+			Currency:          "USD",
+		}},
+		Liabilities: []canon.Liability{{
+			AccountRef:      "checking-1",
+			APR:             4.5,
+			MinPaymentCents: 2500,
+		}},
+		Skipped: []canon.SkippedRecord{{
+			Kind:   canon.RecordKindTransaction,
+			ID:     "eur-txn",
+			Reason: canon.SkipUnsupportedCurrency,
+			Detail: "EUR",
+		}},
+		NextCursor: "cursor-1",
+	}}
+
+	result, err := SyncProviderItem(
+		context.Background(),
+		db,
+		cipher,
+		item,
+		func(string) (canon.Provider, error) {
+			return provider, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("SyncProviderItem() error: %v", err)
+	}
+	if result == nil || len(result.Skipped) != 2 {
+		t.Fatalf("SyncProviderItem() skipped = %#v, want two records", result)
+	}
+	providerSkip := result.Skipped[0]
+	if providerSkip.Kind != canon.RecordKindTransaction ||
+		providerSkip.Reason != canon.SkipUnsupportedCurrency || providerSkip.ID != "eur-txn" {
+		t.Errorf("provider skip = %#v, want eur-txn unsupported_currency", providerSkip)
+	}
+	ingestSkip := result.Skipped[1]
+	if ingestSkip.Kind != canon.RecordKindLiability ||
+		ingestSkip.Reason != canon.SkipUnsupportedAccountType || ingestSkip.ID != "checking-1" {
+		t.Errorf("ingest skip = %#v, want checking-1 liability unsupported_account_type", ingestSkip)
+	}
+
+	var cursor string
+	if err := db.QueryRow(
+		"SELECT sync_cursor FROM provider_items WHERE id = ?",
+		item.DatabaseID,
+	).Scan(&cursor); err != nil {
+		t.Fatalf("read provider Item cursor: %v", err)
+	}
+	if cursor != "cursor-1" {
+		t.Errorf("provider Item cursor = %q, want cursor-1", cursor)
 	}
 }
 

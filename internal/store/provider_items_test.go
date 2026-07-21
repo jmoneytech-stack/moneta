@@ -125,6 +125,48 @@ func TestGetProviderItemLoadsEncryptedConnection(t *testing.T) {
 	}
 }
 
+func TestListProviderItemsLoadsConnectionsInItemOrder(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	for _, itemID := range []string{"item-b", "item-a"} {
+		if _, err := SaveProviderItem(ctx, db, ProviderItemSecret{
+			Provider:              "plaid",
+			ItemID:                itemID,
+			Institution:           "Test Bank",
+			AccessTokenCiphertext: []byte{1, 2, 3},
+		}); err != nil {
+			t.Fatalf("SaveProviderItem() error: %v", err)
+		}
+	}
+	if _, err := SaveProviderItem(ctx, db, ProviderItemSecret{
+		Provider:              "other",
+		ItemID:                "item-other",
+		Institution:           "Other Bank",
+		AccessTokenCiphertext: []byte{4, 5, 6},
+	}); err != nil {
+		t.Fatalf("SaveProviderItem() error: %v", err)
+	}
+
+	items, err := ListProviderItems(ctx, db, "plaid")
+	if err != nil {
+		t.Fatalf("ListProviderItems() error: %v", err)
+	}
+	if len(items) != 2 || items[0].ItemID != "item-a" || items[1].ItemID != "item-b" {
+		t.Fatalf("ListProviderItems() = %#v, want item-a then item-b", items)
+	}
+	if len(items[0].AccessTokenEnc) == 0 {
+		t.Error("ListProviderItems() dropped the encrypted access token")
+	}
+
+	if _, err := ListProviderItems(ctx, db, ""); err == nil {
+		t.Error("ListProviderItems() succeeded without a provider")
+	}
+	if _, err := ListProviderItems(ctx, nil, "plaid"); err == nil {
+		t.Error("ListProviderItems() succeeded without a database")
+	}
+}
+
 func TestGetProviderItemValidatesInputAndReportsMissingItem(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

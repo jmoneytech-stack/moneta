@@ -12,7 +12,7 @@ Phase 1 implementation and post-review hardening are complete pending final main
 The Link flow creates and exchanges Plaid tokens, encrypts permanent access tokens before SQLite persistence, and rejects every non-loopback bind.
 The complete Link, transactions, balances, liabilities, encrypted persistence, and atomic ingestion path has been verified against Plaid Sandbox.
 The hardening stack addresses the confirmed review findings before Phase 2 begins.
-User-facing CLI and REST commands are next after final approval.
+The `moneta link` and `moneta sync` commands run the connection and sync flows; the AXI read surface and REST API are next.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -61,11 +61,24 @@ Generate `MONETA_ENCRYPTION_KEY` once with `openssl rand -base64 32`, store it i
 Open the printed `http://127.0.0.1:<port>` URL in a browser.
 The temporary server always binds explicitly to `127.0.0.1`; broader addresses are rejected.
 
-## Phase 1 library sync path
+## Syncing
 
-Until the Phase 2 CLI wraps synchronization, product code loads a linked connection with `store.GetProviderItem` and passes it to `core.SyncProviderItem` with the secret cipher and provider constructor.
+After linking, sync with the same environment (`PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`, `MONETA_ENCRYPTION_KEY`, `MONETA_DB_PATH`):
+
+```sh
+go run ./cmd/moneta sync
+```
+
+`moneta sync` pulls incremental transactions, balances, and liabilities for every linked Plaid item, or one item with `--item <item-id>`.
+Each item prints a one-line summary, including the count of single-row poison records skipped so the sync could still advance.
+Batches and cursors commit atomically, so re-running after a failure is safe.
+
+## Library sync path
+
+`moneta sync` wraps the library sync path: product code loads a linked connection with `store.GetProviderItem` and passes it to `core.SyncProviderItem` with the secret cipher and provider constructor.
 `SyncProviderItem` decrypts the credential in memory, clears the plaintext bytes before returning, syncs from the stored cursor, bootstraps the single Phase 1 personal entity when needed, and applies the batch and cursor atomically.
 Fresh databases require no hand-written entity SQL.
+A successful sync returns `SyncResult.Skipped`, the merged list of provider and ingest records dropped as single-row poison; an empty list means nothing was dropped.
 
 ## License
 
