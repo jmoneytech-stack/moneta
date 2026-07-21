@@ -72,6 +72,51 @@ func SaveProviderItem(
 	return id, nil
 }
 
+// ListProviderItems loads every stored connection for one provider, ordered by
+// item id, without decrypting or exposing credentials.
+func ListProviderItems(
+	ctx context.Context,
+	db *sql.DB,
+	provider string,
+) ([]ProviderItem, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database is required")
+	}
+	if strings.TrimSpace(provider) == "" {
+		return nil, fmt.Errorf("provider is required")
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, item_id, institution, access_token_enc, sync_cursor
+		FROM provider_items
+		WHERE provider = ?
+		ORDER BY item_id
+	`, provider)
+	if err != nil {
+		return nil, fmt.Errorf("list provider items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []ProviderItem
+	for rows.Next() {
+		var item ProviderItem
+		if err := rows.Scan(
+			&item.DatabaseID,
+			&item.ItemID,
+			&item.Institution,
+			&item.AccessTokenEnc,
+			&item.SyncCursor,
+		); err != nil {
+			return nil, fmt.Errorf("scan provider item: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list provider items: %w", err)
+	}
+	return items, nil
+}
+
 // GetProviderItem loads one provider connection without decrypting or exposing
 // its credential.
 func GetProviderItem(
