@@ -1,6 +1,6 @@
 # Moneta - Architecture Plan
 
-Status: approved design. Phase 1 implementation and post-review hardening are complete. Phase 2 is in progress: the poison skip and production `moneta sync` are merged, and `moneta status` with the shared TOON output path is the first AXI read; the remaining AXI reads and REST mirror are next.
+Status: approved design. Phase 1 implementation and post-review hardening are complete. Phase 2 is in progress: the poison skip and production `moneta sync` are merged, and `moneta status`, `moneta accounts`, and `moneta tx` ship on the shared TOON output path; the remaining AXI reads and REST mirror are next.
 Moneta is a self-hosted personal + business finance data hub whose primary consumer is an AI agent, not a human UI.
 It ingests financial data from pluggable providers, normalizes it into a canonical model in SQLite, and exposes it through a token-efficient AXI CLI (TOON output) and a small REST API.
 

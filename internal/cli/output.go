@@ -23,6 +23,31 @@ const (
 	FormatJSON
 )
 
+// Money converts signed integer cents to a canonical dollars decimal for
+// the output boundary (section 2 form: no trailing zeros beyond the exact
+// cents, no negative zero). Money never passes through a float.
+func Money(cents int64) toon.Number {
+	if cents == 0 {
+		return "0"
+	}
+	sign := ""
+	magnitude := cents
+	if cents < 0 {
+		sign = "-"
+		magnitude = -cents
+	}
+	dollars := magnitude / 100
+	frac := magnitude % 100
+	switch {
+	case frac == 0:
+		return toon.Number(fmt.Sprintf("%s%d", sign, dollars))
+	case frac%10 == 0:
+		return toon.Number(fmt.Sprintf("%s%d.%d", sign, dollars, frac/10))
+	default:
+		return toon.Number(fmt.Sprintf("%s%d.%02d", sign, dollars, frac))
+	}
+}
+
 // Render writes doc to w in the requested format with a trailing newline.
 // Internal logic stays on Go structs; conversion happens only here, at the
 // stdout boundary.

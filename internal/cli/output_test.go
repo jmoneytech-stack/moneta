@@ -87,6 +87,31 @@ func TestRenderRejectsInvalidDocuments(t *testing.T) {
 	}
 }
 
+func TestMoneyFormatsCanonicalDecimals(t *testing.T) {
+	tests := []struct {
+		cents int64
+		want  toon.Number
+	}{
+		{0, "0"},
+		{1, "0.01"},
+		{-1, "-0.01"},
+		{100, "1"},
+		{-500, "-5"},
+		{1050, "10.5"},
+		{-4218, "-42.18"},
+		{999999999, "9999999.99"},
+	}
+	for _, test := range tests {
+		got := Money(test.cents)
+		if got != test.want {
+			t.Errorf("Money(%d) = %q, want %q", test.cents, got, test.want)
+		}
+		if !toon.ValidNumber(got) {
+			t.Errorf("Money(%d) = %q is not canonical", test.cents, got)
+		}
+	}
+}
+
 func TestRenderJSONFieldOrderPreserved(t *testing.T) {
 	var buffer bytes.Buffer
 	doc := toon.Object{
