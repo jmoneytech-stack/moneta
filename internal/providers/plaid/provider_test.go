@@ -191,7 +191,7 @@ func TestProviderBalanceDateUsesLocalCalendar(t *testing.T) {
 		)
 	}
 
-	_, balances, _, err := provider.normalizeAccounts([]rawAccount{{
+	_, balances, _, skipped := provider.normalizeAccounts([]rawAccount{{
 		ID:       "checking-1",
 		Name:     "Test Checking",
 		Type:     "depository",
@@ -199,8 +199,8 @@ func TestProviderBalanceDateUsesLocalCalendar(t *testing.T) {
 		Currency: "USD",
 		Current:  &current,
 	}})
-	if err != nil {
-		t.Fatalf("normalizeAccounts() error: %v", err)
+	if len(skipped) != 0 {
+		t.Fatalf("normalizeAccounts() skipped = %#v, want none", skipped)
 	}
 	if len(balances) != 1 {
 		t.Fatalf("balance count = %d, want 1", len(balances))
@@ -275,7 +275,7 @@ func TestProviderSyncPreservesBalancesAcrossLocalCalendarDays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync evening balance: %v", err)
 	}
-	if err := ingestor.ApplySync(ctx, target, firstBatch); err != nil {
+	if _, err := ingestor.ApplySync(ctx, target, firstBatch); err != nil {
 		t.Fatalf("ingest evening balance: %v", err)
 	}
 
@@ -286,7 +286,7 @@ func TestProviderSyncPreservesBalancesAcrossLocalCalendarDays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync next-morning balance: %v", err)
 	}
-	if err := ingestor.ApplySync(ctx, target, secondBatch); err != nil {
+	if _, err := ingestor.ApplySync(ctx, target, secondBatch); err != nil {
 		t.Fatalf("ingest next-morning balance: %v", err)
 	}
 
@@ -327,7 +327,7 @@ func TestProviderBalancesRequireCurrentAmount(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			provider := mustTestProvider(t, &fakeGateway{})
-			_, balances, _, err := provider.normalizeAccounts([]rawAccount{{
+			_, balances, _, skipped := provider.normalizeAccounts([]rawAccount{{
 				ID:        "checking-1",
 				Name:      "Test Checking",
 				Type:      "depository",
@@ -336,8 +336,8 @@ func TestProviderBalancesRequireCurrentAmount(t *testing.T) {
 				Current:   test.current,
 				Available: test.available,
 			}})
-			if err != nil {
-				t.Fatalf("normalizeAccounts() error: %v", err)
+			if len(skipped) != 0 {
+				t.Fatalf("normalizeAccounts() skipped = %#v, want none", skipped)
 			}
 			if len(balances) != test.wantCount {
 				t.Errorf("balance count = %d, want %d", len(balances), test.wantCount)
@@ -432,7 +432,7 @@ func TestProviderSyncThroughIngestReplacesPendingWithPosted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync pending batch: %v", err)
 	}
-	if err := ingestor.ApplySync(ctx, target, firstBatch); err != nil {
+	if _, err := ingestor.ApplySync(ctx, target, firstBatch); err != nil {
 		t.Fatalf("ingest pending batch: %v", err)
 	}
 
@@ -441,7 +441,7 @@ func TestProviderSyncThroughIngestReplacesPendingWithPosted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync posted batch: %v", err)
 	}
-	if err := ingestor.ApplySync(ctx, target, secondBatch); err != nil {
+	if _, err := ingestor.ApplySync(ctx, target, secondBatch); err != nil {
 		t.Fatalf("ingest posted batch: %v", err)
 	}
 
@@ -674,6 +674,411 @@ func TestProviderSyncNormalizesStudentAndMortgageLiabilities(t *testing.T) {
 	mortgage := batch.Liabilities[1]
 	if mortgage.APR != 6.125 || mortgage.MinPaymentCents != 250001 || mortgage.DueDay != 15 {
 		t.Errorf("mortgage liability = %#v", mortgage)
+	}
+}
+
+func TestProviderSyncSkipsUnsupportedCurrencyTransactions(t *testing.T) {
+	gateway := &fakeGateway{
+		syncPages: map[string]rawSyncPage{
+			"": {
+				Added: []rawTransaction{
+					{
+						ID:        "good-id",
+						AccountID: "checking-1",
+						Date:      "2026-07-01",
+						Amount:    4.35,
+						Name:      "Coffee Shop",
+						Currency:  "USD",
+					},
+					{
+						ID:        "euro-id",
+						AccountID: "checking-1",
+						Date:      "2026-07-01",
+						Amount:    10.00,
+						Name:      "Cafe",
+						Currency:  "EUR",
+					},
+					{
+						ID:                 "unofficial-id",
+						AccountID:          "checking-1",
+						Date:               "2026-07-01",
+						Amount:             5.00,
+						Name:               "Crypto Shop",
+						UnofficialCurrency: "BTC",
+					},
+				},
+				NextCursor: "cursor-1",
+			},
+		},
+		accountsResult: []rawAccount{{
+			ID:       "checking-1",
+			Name:     "Test Checking",
+			Type:     "depository",
+			Subtype:  "checking",
+			Currency: "USD",
+		}},
+		liabilitiesError: &APIError{Code: "NO_LIABILITY_ACCOUNTS"},
+	}
+	provider := mustTestProvider(t, gateway)
+
+	batch, err := provider.Sync(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Sync() error: %v", err)
+	}
+	if len(batch.Added) != 1 || batch.Added[0].ProviderTxnID != "good-id" {
+		t.Fatalf("added transactions = %#v, want only good-id", batch.Added)
+	}
+	if batch.NextCursor != "cursor-1" {
+		t.Errorf("NextCursor = %q, want cursor-1", batch.NextCursor)
+	}
+	if len(batch.Skipped) != 2 {
+		t.Fatalf("skipped count = %d, want 2: %#v", len(batch.Skipped), batch.Skipped)
+	}
+	skippedByID := make(map[string]canon.SkippedRecord, len(batch.Skipped))
+	for _, skipped := range batch.Skipped {
+		if skipped.Kind != canon.RecordKindTransaction {
+			t.Errorf("skipped kind = %q, want transaction", skipped.Kind)
+		}
+		if skipped.Reason != canon.SkipUnsupportedCurrency {
+			t.Errorf("skipped reason = %q, want unsupported_currency", skipped.Reason)
+		}
+		skippedByID[skipped.ID] = skipped
+	}
+	if skippedByID["euro-id"].Detail != "EUR" {
+		t.Errorf("euro-id detail = %q, want EUR", skippedByID["euro-id"].Detail)
+	}
+	if _, found := skippedByID["unofficial-id"]; !found {
+		t.Error("unofficial-currency transaction was not recorded as skipped")
+	}
+}
+
+func TestProviderSyncSkipsMalformedDateTransactions(t *testing.T) {
+	gateway := &fakeGateway{
+		syncPages: map[string]rawSyncPage{
+			"": {
+				Added: []rawTransaction{
+					{
+						ID:        "good-id",
+						AccountID: "checking-1",
+						Date:      "2026-07-01",
+						Amount:    4.35,
+						Name:      "Coffee Shop",
+						Currency:  "USD",
+					},
+					{
+						ID:        "no-date-id",
+						AccountID: "checking-1",
+						Amount:    3.00,
+						Name:      "Vending",
+						Currency:  "USD",
+					},
+					{
+						ID:        "bad-date-id",
+						AccountID: "checking-1",
+						Date:      "07/01/2026",
+						Amount:    2.00,
+						Name:      "Kiosk",
+						Currency:  "USD",
+					},
+				},
+				NextCursor: "cursor-1",
+			},
+		},
+		accountsResult: []rawAccount{{
+			ID:       "checking-1",
+			Name:     "Test Checking",
+			Type:     "depository",
+			Subtype:  "checking",
+			Currency: "USD",
+		}},
+		liabilitiesError: &APIError{Code: "NO_LIABILITY_ACCOUNTS"},
+	}
+	provider := mustTestProvider(t, gateway)
+
+	batch, err := provider.Sync(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Sync() error: %v", err)
+	}
+	if len(batch.Added) != 1 || batch.Added[0].ProviderTxnID != "good-id" {
+		t.Fatalf("added transactions = %#v, want only good-id", batch.Added)
+	}
+	if batch.NextCursor != "cursor-1" {
+		t.Errorf("NextCursor = %q, want cursor-1", batch.NextCursor)
+	}
+	if len(batch.Skipped) != 2 {
+		t.Fatalf("skipped count = %d, want 2: %#v", len(batch.Skipped), batch.Skipped)
+	}
+	for _, skipped := range batch.Skipped {
+		if skipped.Kind != canon.RecordKindTransaction ||
+			skipped.Reason != canon.SkipMalformedRecord ||
+			(skipped.ID != "no-date-id" && skipped.ID != "bad-date-id") {
+			t.Errorf("skipped record = %#v, want no-date-id/bad-date-id malformed_record", skipped)
+		}
+	}
+}
+
+func TestProviderSyncSkipsUnsupportedAccountTypeAndDependentRecords(t *testing.T) {
+	current := 100.00
+	minimum := 25.00
+	gateway := &fakeGateway{
+		syncPages: map[string]rawSyncPage{
+			"": {
+				Added: []rawTransaction{
+					{
+						ID:        "good-txn",
+						AccountID: "checking-1",
+						Date:      "2026-07-01",
+						Amount:    1.00,
+						Name:      "Coffee Shop",
+						Currency:  "USD",
+					},
+					{
+						ID:        "custody-txn",
+						AccountID: "custodial-1",
+						Date:      "2026-07-01",
+						Amount:    2.00,
+						Name:      "Brokerage",
+						Currency:  "USD",
+					},
+				},
+				NextCursor: "cursor-1",
+			},
+		},
+		accountsResult: []rawAccount{
+			{
+				ID:       "checking-1",
+				Name:     "Test Checking",
+				Type:     "depository",
+				Subtype:  "checking",
+				Currency: "USD",
+			},
+			{
+				ID:       "custodial-1",
+				Name:     "Test Custodial",
+				Type:     "custodial",
+				Subtype:  "custodial",
+				Currency: "USD",
+				Current:  &current,
+			},
+		},
+		liabilitiesResult: rawLiabilities{
+			Credit: []rawCreditLiability{{
+				AccountID:          "custodial-1",
+				MinimumPayment:     &minimum,
+				NextPaymentDueDate: "2026-07-28",
+			}},
+		},
+	}
+	provider := mustTestProvider(t, gateway)
+
+	batch, err := provider.Sync(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Sync() error: %v", err)
+	}
+	if len(batch.Accounts) != 1 || batch.Accounts[0].ProviderAccountID != "checking-1" {
+		t.Fatalf("accounts = %#v, want only checking-1", batch.Accounts)
+	}
+	if len(batch.Added) != 1 || batch.Added[0].ProviderTxnID != "good-txn" {
+		t.Fatalf("added transactions = %#v, want only good-txn", batch.Added)
+	}
+	if len(batch.Liabilities) != 0 {
+		t.Fatalf("liabilities = %#v, want none", batch.Liabilities)
+	}
+	if len(batch.Skipped) != 3 {
+		t.Fatalf("skipped count = %d, want 3: %#v", len(batch.Skipped), batch.Skipped)
+	}
+	var accountSkip, txnSkip, liabilitySkip *canon.SkippedRecord
+	for index := range batch.Skipped {
+		skipped := &batch.Skipped[index]
+		switch skipped.Kind {
+		case canon.RecordKindAccount:
+			accountSkip = skipped
+		case canon.RecordKindTransaction:
+			txnSkip = skipped
+		case canon.RecordKindLiability:
+			liabilitySkip = skipped
+		default:
+			t.Errorf("unexpected skipped record %#v", skipped)
+		}
+	}
+	if accountSkip == nil || accountSkip.ID != "custodial-1" ||
+		accountSkip.Reason != canon.SkipUnsupportedAccountType {
+		t.Errorf("account skip = %#v, want custodial-1 unsupported_account_type", accountSkip)
+	}
+	if txnSkip == nil || txnSkip.ID != "custody-txn" || txnSkip.Reason != canon.SkipAccountSkipped {
+		t.Errorf("transaction skip = %#v, want custody-txn account_skipped", txnSkip)
+	}
+	if liabilitySkip == nil || liabilitySkip.ID != "custodial-1" ||
+		liabilitySkip.Reason != canon.SkipAccountSkipped {
+		t.Errorf("liability skip = %#v, want custodial-1 account_skipped", liabilitySkip)
+	}
+}
+
+func TestProviderSyncSkipsMalformedLiability(t *testing.T) {
+	minimum := 25.00
+	gateway := &fakeGateway{
+		syncPages: map[string]rawSyncPage{"": {NextCursor: "cursor-1"}},
+		accountsResult: []rawAccount{
+			{ID: "card-1", Name: "Test Card One", Type: "credit", Subtype: "credit card", Currency: "USD"},
+			{ID: "card-2", Name: "Test Card Two", Type: "credit", Subtype: "credit card", Currency: "USD"},
+		},
+		liabilitiesResult: rawLiabilities{
+			Credit: []rawCreditLiability{
+				{
+					AccountID:          "card-1",
+					MinimumPayment:     &minimum,
+					NextPaymentDueDate: "07/28/2026",
+				},
+				{
+					AccountID:          "card-2",
+					MinimumPayment:     &minimum,
+					NextPaymentDueDate: "2026-07-28",
+				},
+			},
+		},
+	}
+	provider := mustTestProvider(t, gateway)
+
+	batch, err := provider.Sync(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Sync() error: %v", err)
+	}
+	if len(batch.Liabilities) != 1 || batch.Liabilities[0].AccountRef != "card-2" {
+		t.Fatalf("liabilities = %#v, want only card-2", batch.Liabilities)
+	}
+	if len(batch.Skipped) != 1 {
+		t.Fatalf("skipped count = %d, want 1: %#v", len(batch.Skipped), batch.Skipped)
+	}
+	skipped := batch.Skipped[0]
+	if skipped.Kind != canon.RecordKindLiability || skipped.ID != "card-1" ||
+		skipped.Reason != canon.SkipMalformedRecord {
+		t.Errorf("skipped record = %#v, want card-1 liability malformed_record", skipped)
+	}
+}
+
+func TestProviderSyncPoisonRecordDoesNotWedgeItem(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "moneta.db"))
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close test database: %v", err)
+		}
+	})
+
+	entityResult, err := db.Exec(
+		"INSERT INTO entities (kind, name) VALUES ('personal', 'Test Personal')",
+	)
+	if err != nil {
+		t.Fatalf("insert test entity: %v", err)
+	}
+	entityID, err := entityResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("read test entity id: %v", err)
+	}
+	itemResult, err := db.Exec(`
+		INSERT INTO provider_items (
+			provider, item_id, institution, access_token_enc
+		) VALUES ('plaid', 'item-fake', 'Sandbox Bank', x'010203')
+	`)
+	if err != nil {
+		t.Fatalf("insert test provider item: %v", err)
+	}
+	providerItemID, err := itemResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("read test provider item id: %v", err)
+	}
+
+	gateway := &fakeGateway{
+		syncPages: map[string]rawSyncPage{
+			"": {
+				Added: []rawTransaction{
+					{
+						ID:        "good-id",
+						AccountID: "checking-1",
+						Date:      "2026-07-01",
+						Amount:    4.35,
+						Name:      "Coffee Shop",
+						Currency:  "USD",
+					},
+					{
+						ID:        "poison-id",
+						AccountID: "checking-1",
+						Date:      "2026-07-01",
+						Amount:    9.99,
+						Name:      "Cafe",
+						Currency:  "EUR",
+					},
+				},
+				NextCursor: "cursor-1",
+			},
+			"cursor-1": {
+				Added: []rawTransaction{{
+					ID:        "next-good-id",
+					AccountID: "checking-1",
+					Date:      "2026-07-02",
+					Amount:    2.50,
+					Name:      "Bookstore",
+					Currency:  "USD",
+				}},
+				NextCursor: "cursor-2",
+			},
+		},
+		accountsResult: []rawAccount{{
+			ID:       "checking-1",
+			Name:     "Test Checking",
+			Type:     "depository",
+			Subtype:  "checking",
+			Currency: "USD",
+		}},
+		liabilitiesError: &APIError{Code: "NO_LIABILITY_ACCOUNTS"},
+	}
+	provider := mustTestProvider(t, gateway)
+	ingestor := core.NewIngestor(db)
+	target := core.SyncTarget{
+		ProviderItemID:  providerItemID,
+		DefaultEntityID: entityID,
+	}
+
+	firstBatch, err := provider.Sync(ctx, "")
+	if err != nil {
+		t.Fatalf("sync poisoned batch: %v", err)
+	}
+	if len(firstBatch.Added) != 1 || len(firstBatch.Skipped) != 1 {
+		t.Fatalf(
+			"first sync added/skipped = %d/%d, want 1/1",
+			len(firstBatch.Added),
+			len(firstBatch.Skipped),
+		)
+	}
+	if _, err := ingestor.ApplySync(ctx, target, firstBatch); err != nil {
+		t.Fatalf("ingest poisoned batch: %v", err)
+	}
+
+	target.ExpectedCursor = firstBatch.NextCursor
+	secondBatch, err := provider.Sync(ctx, target.ExpectedCursor)
+	if err != nil {
+		t.Fatalf("re-sync after poisoned batch: %v", err)
+	}
+	if _, err := ingestor.ApplySync(ctx, target, secondBatch); err != nil {
+		t.Fatalf("ingest second batch: %v", err)
+	}
+
+	var count int
+	var cursor string
+	if err := db.QueryRow("SELECT count(*) FROM transactions").Scan(&count); err != nil {
+		t.Fatalf("count stored transactions: %v", err)
+	}
+	if err := db.QueryRow(
+		"SELECT sync_cursor FROM provider_items WHERE id = ?",
+		providerItemID,
+	).Scan(&cursor); err != nil {
+		t.Fatalf("read sync cursor: %v", err)
+	}
+	if count != 2 || cursor != "cursor-2" {
+		t.Errorf("stored transactions/cursor = %d/%q, want 2/cursor-2", count, cursor)
 	}
 }
 

@@ -37,7 +37,7 @@ func TestApplySyncReplacesPendingWithPostedByNativeID(t *testing.T) {
 		Added:      []canon.Transaction{pending},
 		NextCursor: "cursor-1",
 	}
-	if err := ingestor.ApplySync(ctx, target, firstBatch); err != nil {
+	if _, err := ingestor.ApplySync(ctx, target, firstBatch); err != nil {
 		t.Fatalf("apply pending batch: %v", err)
 	}
 
@@ -56,7 +56,7 @@ func TestApplySyncReplacesPendingWithPostedByNativeID(t *testing.T) {
 		Removed:    []string{"pending-id"},
 		NextCursor: "cursor-2",
 	}
-	if err := ingestor.ApplySync(ctx, target, secondBatch); err != nil {
+	if _, err := ingestor.ApplySync(ctx, target, secondBatch); err != nil {
 		t.Fatalf("apply posted batch: %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestApplySyncUsesFuzzyFallbackForIDLessPendingTransition(t *testing.T) {
 		Status:      canon.TxnStatusPending,
 		Currency:    "USD",
 	}
-	if err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
 		Accounts:   []canon.Account{account},
 		Added:      []canon.Transaction{pending},
 		NextCursor: "cursor-1",
@@ -130,7 +130,7 @@ func TestApplySyncUsesFuzzyFallbackForIDLessPendingTransition(t *testing.T) {
 	posted.Date = "2026-07-03"
 	posted.Status = canon.TxnStatusPosted
 	target.ExpectedCursor = "cursor-1"
-	if err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
 		Added:      []canon.Transaction{posted},
 		NextCursor: "cursor-2",
 	}); err != nil {
@@ -167,7 +167,7 @@ func TestApplySyncKeepsDistinctNativeTransactionsWithIdenticalDetails(t *testing
 	secondTransaction := transaction
 	secondTransaction.ProviderTxnID = "transaction-2"
 
-	if err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
+	if _, err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
 		Accounts: []canon.Account{{
 			ProviderAccountID: "checking-1",
 			Name:              "Test Checking",
@@ -197,7 +197,7 @@ func TestApplySyncDoesNotFuzzyMatchPostedTransactionWithNativeID(t *testing.T) {
 		Status:        canon.TxnStatusPending,
 		Currency:      "USD",
 	}
-	if err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
 		Accounts: []canon.Account{{
 			ProviderAccountID: "checking-1",
 			Name:              "Test Checking",
@@ -216,7 +216,7 @@ func TestApplySyncDoesNotFuzzyMatchPostedTransactionWithNativeID(t *testing.T) {
 	postedDirectly.Date = "2026-07-11"
 	postedDirectly.Status = canon.TxnStatusPosted
 	target.ExpectedCursor = "cursor-1"
-	if err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
 		Added:      []canon.Transaction{postedDirectly},
 		NextCursor: "cursor-2",
 	}); err != nil {
@@ -229,7 +229,7 @@ func TestApplySyncDoesNotFuzzyMatchPostedTransactionWithNativeID(t *testing.T) {
 	postedPending.Date = "2026-07-12"
 	postedPending.Status = canon.TxnStatusPosted
 	target.ExpectedCursor = "cursor-2"
-	if err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
 		Added:      []canon.Transaction{postedPending},
 		NextCursor: "cursor-3",
 	}); err != nil {
@@ -292,7 +292,7 @@ func TestApplySyncUpsertsBalancesLiabilitiesAndTransferCategory(t *testing.T) {
 		}},
 		NextCursor: "cursor-1",
 	}
-	if err := ingestor.ApplySync(ctx, target, batch); err != nil {
+	if _, err := ingestor.ApplySync(ctx, target, batch); err != nil {
 		t.Fatalf("apply account data batch: %v", err)
 	}
 
@@ -358,10 +358,48 @@ func TestApplySyncUpsertsBalancesLiabilitiesAndTransferCategory(t *testing.T) {
 	}
 }
 
+func TestApplySyncSkipsLiabilityForUnsupportedAccountType(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+	ctx := context.Background()
+
+	result, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "checking-1",
+			Name:              "Test Checking",
+			Type:              canon.AccountTypeChecking,
+			Currency:          "USD",
+		}},
+		Liabilities: []canon.Liability{{
+			AccountRef:      "checking-1",
+			APR:             4.5,
+			MinPaymentCents: 2500,
+		}},
+		NextCursor: "cursor-1",
+	})
+	if err != nil {
+		t.Fatalf("ApplySync() error: %v", err)
+	}
+	if result == nil || len(result.Skipped) != 1 {
+		t.Fatalf("ApplySync() skipped = %#v, want one record", result)
+	}
+	skipped := result.Skipped[0]
+	if skipped.Kind != canon.RecordKindLiability || skipped.ID != "checking-1" ||
+		skipped.Reason != canon.SkipUnsupportedAccountType ||
+		skipped.Detail != string(canon.AccountTypeChecking) {
+		t.Errorf("skipped record = %#v, want checking-1 liability unsupported_account_type/checking", skipped)
+	}
+
+	assertCount(t, db, "accounts", 1)
+	assertCount(t, db, "credit_terms", 0)
+	assertCount(t, db, "loan_terms", 0)
+	assertCount(t, db, "import_runs", 1)
+	assertCursor(t, db, target.ProviderItemID, "cursor-1")
+}
+
 func TestApplySyncRollsBackDataAndCursorOnFailure(t *testing.T) {
 	db, ingestor, target := newTestIngestor(t, "plaid")
 
-	err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
+	_, err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
 		Accounts: []canon.Account{{
 			ProviderAccountID: "checking-1",
 			Name:              "Test Checking",
@@ -392,7 +430,7 @@ func TestApplySyncRejectsStaleCursorWithoutWrites(t *testing.T) {
 	db, ingestor, target := newTestIngestor(t, "plaid")
 	target.ExpectedCursor = "stale-cursor"
 
-	err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
+	_, err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
 		NextCursor: "new-cursor",
 	})
 	if !errors.Is(err, ErrCursorChanged) {
@@ -407,7 +445,7 @@ func TestApplySyncRemovesProviderTransaction(t *testing.T) {
 	db, ingestor, target := newTestIngestor(t, "plaid")
 	ctx := context.Background()
 
-	if err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
 		Accounts: []canon.Account{{
 			ProviderAccountID: "checking-1",
 			Name:              "Test Checking",
@@ -428,7 +466,7 @@ func TestApplySyncRemovesProviderTransaction(t *testing.T) {
 	}
 
 	target.ExpectedCursor = "cursor-1"
-	if err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
 		Removed:    []string{"transaction-1"},
 		NextCursor: "cursor-2",
 	}); err != nil {

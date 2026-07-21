@@ -139,21 +139,32 @@ func (p *Provider) Sync(ctx context.Context, cursor string) (*canon.SyncBatch, e
 	}
 	updates.mergeAccounts(liabilities.Accounts, false)
 
-	canonicalAccounts, balances, accountByID, err := p.normalizeAccounts(updates.accountsInOrder())
-	if err != nil {
-		return nil, err
+	canonicalAccounts, balances, accountByID, skipped := p.normalizeAccounts(
+		updates.accountsInOrder(),
+	)
+	added, addedSkipped := normalizeTransactions(updates.added)
+	modified, modifiedSkipped := normalizeTransactions(updates.modified)
+	canonicalLiabilities, liabilitiesSkipped := normalizeLiabilities(liabilities, accountByID)
+	skipped = append(skipped, addedSkipped...)
+	skipped = append(skipped, modifiedSkipped...)
+	skipped = append(skipped, liabilitiesSkipped...)
+
+	// Records that reference a skipped account would fail ingest and wedge the
+	// cursor, so they are dropped here with their own skip records.
+	skippedAccountIDs := make(map[string]bool)
+	for _, record := range skipped {
+		if record.Kind == canon.RecordKindAccount && record.ID != "" {
+			skippedAccountIDs[record.ID] = true
+		}
 	}
-	added, err := normalizeTransactions(updates.added)
-	if err != nil {
-		return nil, fmt.Errorf("normalize added Plaid transactions: %w", err)
-	}
-	modified, err := normalizeTransactions(updates.modified)
-	if err != nil {
-		return nil, fmt.Errorf("normalize modified Plaid transactions: %w", err)
-	}
-	canonicalLiabilities, err := normalizeLiabilities(liabilities, accountByID)
-	if err != nil {
-		return nil, err
+	if len(skippedAccountIDs) > 0 {
+		added, skipped = filterSkippedAccountTransactions(added, skippedAccountIDs, skipped)
+		modified, skipped = filterSkippedAccountTransactions(modified, skippedAccountIDs, skipped)
+		canonicalLiabilities, skipped = filterSkippedAccountLiabilities(
+			canonicalLiabilities,
+			skippedAccountIDs,
+			skipped,
+		)
 	}
 
 	return &canon.SyncBatch{
@@ -164,7 +175,49 @@ func (p *Provider) Sync(ctx context.Context, cursor string) (*canon.SyncBatch, e
 		Balances:    balances,
 		Liabilities: canonicalLiabilities,
 		NextCursor:  updates.nextCursor,
+		Skipped:     skipped,
 	}, nil
+}
+
+func filterSkippedAccountTransactions(
+	transactions []canon.Transaction,
+	skippedAccountIDs map[string]bool,
+	skipped []canon.SkippedRecord,
+) ([]canon.Transaction, []canon.SkippedRecord) {
+	kept := make([]canon.Transaction, 0, len(transactions))
+	for _, transaction := range transactions {
+		if skippedAccountIDs[transaction.AccountRef] {
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindTransaction,
+				ID:     transaction.ProviderTxnID,
+				Reason: canon.SkipAccountSkipped,
+				Detail: transaction.AccountRef,
+			})
+			continue
+		}
+		kept = append(kept, transaction)
+	}
+	return kept, skipped
+}
+
+func filterSkippedAccountLiabilities(
+	liabilities []canon.Liability,
+	skippedAccountIDs map[string]bool,
+	skipped []canon.SkippedRecord,
+) ([]canon.Liability, []canon.SkippedRecord) {
+	kept := make([]canon.Liability, 0, len(liabilities))
+	for _, liability := range liabilities {
+		if skippedAccountIDs[liability.AccountRef] {
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindLiability,
+				ID:     liability.AccountRef,
+				Reason: canon.SkipAccountSkipped,
+			})
+			continue
+		}
+		kept = append(kept, liability)
+	}
+	return kept, skipped
 }
 
 func (p *Provider) transactionUpdates(ctx context.Context, cursor string) (*syncAccumulator, error) {
@@ -234,25 +287,46 @@ func (a *syncAccumulator) accountsInOrder() []rawAccount {
 	return accounts
 }
 
+// normalizeAccounts converts raw Plaid accounts one row at a time. Accounts
+// that cannot be normalized are skipped and recorded instead of failing the
+// batch; a bad balance amount skips only that account's balance snapshot.
 func (p *Provider) normalizeAccounts(
 	accounts []rawAccount,
-) ([]canon.Account, []canon.Balance, map[string]rawAccount, error) {
+) ([]canon.Account, []canon.Balance, map[string]rawAccount, []canon.SkippedRecord) {
 	canonicalAccounts := make([]canon.Account, 0, len(accounts))
 	balances := make([]canon.Balance, 0, len(accounts))
 	accountByID := make(map[string]rawAccount, len(accounts))
+	var skipped []canon.SkippedRecord
 	balanceDate := canon.Date(p.now().Format("2006-01-02"))
 
 	for _, account := range accounts {
 		if account.ID == "" {
-			return nil, nil, nil, fmt.Errorf("Plaid account id is empty")
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindAccount,
+				Reason: canon.SkipMalformedRecord,
+				Detail: "missing account id",
+			})
+			continue
 		}
 		accountType, err := canonicalAccountType(account.Type, account.Subtype)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("normalize Plaid account %q: %w", account.ID, err)
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindAccount,
+				ID:     account.ID,
+				Reason: canon.SkipUnsupportedAccountType,
+				Detail: account.Type,
+			})
+			continue
 		}
 		currency, err := canonicalPlaidCurrency(account.Currency, account.UnofficialCurrency)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("normalize Plaid account %q: %w", account.ID, err)
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindAccount,
+				ID:     account.ID,
+				Reason: canon.SkipUnsupportedCurrency,
+				Detail: currencySkipDetail(account.Currency, account.UnofficialCurrency),
+			})
+			continue
 		}
 		name := account.Name
 		if name == "" {
@@ -273,15 +347,33 @@ func (p *Provider) normalizeAccounts(
 		}
 		current, err := optionalMoneyToCents(account.Current)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("normalize current balance for %q: %w", account.ID, err)
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindBalance,
+				ID:     account.ID,
+				Reason: canon.SkipMalformedRecord,
+				Detail: "invalid current balance",
+			})
+			continue
 		}
 		available, err := optionalMoneyToCents(account.Available)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("normalize available balance for %q: %w", account.ID, err)
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindBalance,
+				ID:     account.ID,
+				Reason: canon.SkipMalformedRecord,
+				Detail: "invalid available balance",
+			})
+			continue
 		}
 		limit, err := optionalMoneyToCents(account.Limit)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("normalize balance limit for %q: %w", account.ID, err)
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindBalance,
+				ID:     account.ID,
+				Reason: canon.SkipMalformedRecord,
+				Detail: "invalid balance limit",
+			})
+			continue
 		}
 		balances = append(balances, canon.Balance{
 			AccountRef:     account.ID,
@@ -291,5 +383,5 @@ func (p *Provider) normalizeAccounts(
 			LimitCents:     limit,
 		})
 	}
-	return canonicalAccounts, balances, accountByID, nil
+	return canonicalAccounts, balances, accountByID, skipped
 }

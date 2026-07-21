@@ -120,7 +120,7 @@ func TestSandboxLinkedItemSyncAndIngest(t *testing.T) {
 		t.Fatalf("create Sandbox entity: %v", err)
 	}
 	ingestor := core.NewIngestor(database)
-	if err := ingestor.ApplySync(ctx, core.SyncTarget{
+	if _, err := ingestor.ApplySync(ctx, core.SyncTarget{
 		ProviderItemID:  providerItemID,
 		DefaultEntityID: entityID,
 		ExpectedCursor:  cursor,

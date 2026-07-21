@@ -66,6 +66,7 @@ The temporary server always binds explicitly to `127.0.0.1`; broader addresses a
 Until the Phase 2 CLI wraps synchronization, product code loads a linked connection with `store.GetProviderItem` and passes it to `core.SyncProviderItem` with the secret cipher and provider constructor.
 `SyncProviderItem` decrypts the credential in memory, clears the plaintext bytes before returning, syncs from the stored cursor, bootstraps the single Phase 1 personal entity when needed, and applies the batch and cursor atomically.
 Fresh databases require no hand-written entity SQL.
+A successful sync returns `SyncResult.Skipped`, the merged list of provider and ingest records dropped as single-row poison; an empty list means nothing was dropped.
 
 ## License
 

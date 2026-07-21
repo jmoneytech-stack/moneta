@@ -38,77 +38,87 @@ func NewIngestor(db *sql.DB) *Ingestor {
 	return &Ingestor{db: db}
 }
 
+// IngestResult summarizes one applied sync batch.
+type IngestResult struct {
+	// Skipped lists batch records dropped during ingest with stable,
+	// machine-readable reasons. It is empty when nothing was skipped.
+	Skipped []canon.SkippedRecord
+}
+
 // ApplySync writes a complete provider batch and advances its cursor in the
 // same transaction. Any validation or write failure rolls back the full batch.
+// Row-local poison that core can route around (a liability for an account type
+// with no terms table) is skipped and reported in the result instead of
+// rolling the batch back, so one bad record cannot wedge the Item cursor.
 func (i *Ingestor) ApplySync(
 	ctx context.Context,
 	target SyncTarget,
 	batch *canon.SyncBatch,
-) error {
+) (*IngestResult, error) {
 	if i == nil || i.db == nil {
-		return fmt.Errorf("database is required")
+		return nil, fmt.Errorf("database is required")
 	}
 	if target.ProviderItemID <= 0 {
-		return fmt.Errorf("provider item id must be positive")
+		return nil, fmt.Errorf("provider item id must be positive")
 	}
 	if target.DefaultEntityID <= 0 {
-		return fmt.Errorf("default entity id must be positive")
+		return nil, fmt.Errorf("default entity id must be positive")
 	}
 	if batch == nil {
-		return fmt.Errorf("sync batch is required")
+		return nil, fmt.Errorf("sync batch is required")
 	}
 
 	tx, err := i.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin sync transaction: %w", err)
+		return nil, fmt.Errorf("begin sync transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	writer, err := newSyncWriter(ctx, tx, target)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for index := range batch.Accounts {
 		if err := writer.upsertAccount(ctx, batch.Accounts[index]); err != nil {
-			return fmt.Errorf("apply account %d: %w", index, err)
+			return nil, fmt.Errorf("apply account %d: %w", index, err)
 		}
 	}
 	for index := range batch.Added {
 		if err := writer.upsertTransaction(ctx, batch.Added[index]); err != nil {
-			return fmt.Errorf("apply added transaction %d: %w", index, err)
+			return nil, fmt.Errorf("apply added transaction %d: %w", index, err)
 		}
 	}
 	for index := range batch.Modified {
 		if err := writer.upsertTransaction(ctx, batch.Modified[index]); err != nil {
-			return fmt.Errorf("apply modified transaction %d: %w", index, err)
+			return nil, fmt.Errorf("apply modified transaction %d: %w", index, err)
 		}
 	}
 	for index := range batch.Balances {
 		if err := writer.upsertBalance(ctx, batch.Balances[index]); err != nil {
-			return fmt.Errorf("apply balance %d: %w", index, err)
+			return nil, fmt.Errorf("apply balance %d: %w", index, err)
 		}
 	}
 	for index := range batch.Liabilities {
 		if err := writer.upsertLiability(ctx, batch.Liabilities[index]); err != nil {
-			return fmt.Errorf("apply liability %d: %w", index, err)
+			return nil, fmt.Errorf("apply liability %d: %w", index, err)
 		}
 	}
 	// Removals run after additions so a posted transaction can claim its
 	// pending row before Plaid's removal of the pending provider ID is applied.
 	for index, providerTransactionID := range batch.Removed {
 		if err := writer.removeTransaction(ctx, providerTransactionID); err != nil {
-			return fmt.Errorf("apply removed transaction %d: %w", index, err)
+			return nil, fmt.Errorf("apply removed transaction %d: %w", index, err)
 		}
 	}
 
 	if err := writer.finish(ctx, batch); err != nil {
-		return err
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit sync transaction: %w", err)
+		return nil, fmt.Errorf("commit sync transaction: %w", err)
 	}
 
-	return nil
+	return &IngestResult{Skipped: writer.skipped}, nil
 }
 
 type syncWriter struct {
@@ -119,6 +129,7 @@ type syncWriter struct {
 	expectedCursor  string
 	accounts        map[string]accountRecord
 	categories      map[string]categoryRecord
+	skipped         []canon.SkippedRecord
 }
 
 type accountRecord struct {
@@ -658,11 +669,14 @@ func (w *syncWriter) upsertLiability(ctx context.Context, liability canon.Liabil
 			return fmt.Errorf("remove obsolete credit terms: %w", err)
 		}
 	default:
-		return fmt.Errorf(
-			"liability account %q has unsupported type %q",
-			liability.AccountRef,
-			account.typeName,
-		)
+		// A liability for an account type with no terms table is row-local
+		// poison: skip it so the batch and cursor can still advance.
+		w.skipped = append(w.skipped, canon.SkippedRecord{
+			Kind:   canon.RecordKindLiability,
+			ID:     liability.AccountRef,
+			Reason: canon.SkipUnsupportedAccountType,
+			Detail: string(account.typeName),
+		})
 	}
 
 	return nil

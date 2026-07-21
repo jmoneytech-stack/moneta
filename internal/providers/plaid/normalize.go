@@ -9,22 +9,58 @@ import (
 	"github.com/jmoneytech-stack/moneta/internal/canon"
 )
 
-func normalizeTransactions(transactions []rawTransaction) ([]canon.Transaction, error) {
+// normalizeTransactions converts raw Plaid transactions one row at a time.
+// Rows that cannot be normalized are skipped and recorded instead of failing
+// the batch, so a single poison record cannot wedge the Item cursor.
+func normalizeTransactions(
+	transactions []rawTransaction,
+) ([]canon.Transaction, []canon.SkippedRecord) {
 	canonicalTransactions := make([]canon.Transaction, 0, len(transactions))
+	var skipped []canon.SkippedRecord
 	for _, transaction := range transactions {
 		if transaction.ID == "" || transaction.AccountID == "" {
-			return nil, fmt.Errorf("Plaid transaction and account ids are required")
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindTransaction,
+				ID:     transaction.ID,
+				Reason: canon.SkipMalformedRecord,
+				Detail: "missing transaction or account id",
+			})
+			continue
 		}
 		amount, err := transactionAmountToCents(transaction.Amount)
 		if err != nil {
-			return nil, fmt.Errorf("transaction %q amount: %w", transaction.ID, err)
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindTransaction,
+				ID:     transaction.ID,
+				Reason: canon.SkipMalformedRecord,
+				Detail: "invalid amount",
+			})
+			continue
 		}
 		currency, err := canonicalPlaidCurrency(
 			transaction.Currency,
 			transaction.UnofficialCurrency,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("transaction %q: %w", transaction.ID, err)
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindTransaction,
+				ID:     transaction.ID,
+				Reason: canon.SkipUnsupportedCurrency,
+				Detail: currencySkipDetail(
+					transaction.Currency,
+					transaction.UnofficialCurrency,
+				),
+			})
+			continue
+		}
+		if !validISODate(transaction.Date) {
+			skipped = append(skipped, canon.SkippedRecord{
+				Kind:   canon.RecordKindTransaction,
+				ID:     transaction.ID,
+				Reason: canon.SkipMalformedRecord,
+				Detail: "invalid date",
+			})
+			continue
 		}
 		merchant := transaction.OriginalDescription
 		if merchant == "" {
@@ -46,13 +82,26 @@ func normalizeTransactions(transactions []rawTransaction) ([]canon.Transaction, 
 			Currency:       currency,
 		})
 	}
-	return canonicalTransactions, nil
+	return canonicalTransactions, skipped
 }
 
+// normalizeLiabilities converts raw Plaid liabilities one row at a time.
+// Rows that cannot be normalized are skipped and recorded instead of failing
+// the batch, so a single poison record cannot wedge the Item cursor.
 func normalizeLiabilities(
 	liabilities rawLiabilities,
 	accounts map[string]rawAccount,
-) ([]canon.Liability, error) {
+) ([]canon.Liability, []canon.SkippedRecord) {
+	var skipped []canon.SkippedRecord
+	skip := func(accountID, detail string) {
+		skipped = append(skipped, canon.SkippedRecord{
+			Kind:   canon.RecordKindLiability,
+			ID:     accountID,
+			Reason: canon.SkipMalformedRecord,
+			Detail: detail,
+		})
+	}
+
 	order := make([]string, 0)
 	byAccount := make(map[string]canon.Liability)
 	merge := func(liability canon.Liability) {
@@ -86,23 +135,28 @@ func normalizeLiabilities(
 	for _, credit := range liabilities.Credit {
 		limit, err := optionalMoneyToCents(accounts[credit.AccountID].Limit)
 		if err != nil {
-			return nil, fmt.Errorf("credit liability %q limit: %w", credit.AccountID, err)
+			skip(credit.AccountID, "invalid limit")
+			continue
 		}
 		minimum, err := optionalMoneyToCents(credit.MinimumPayment)
 		if err != nil {
-			return nil, fmt.Errorf("credit liability %q minimum payment: %w", credit.AccountID, err)
+			skip(credit.AccountID, "invalid minimum payment")
+			continue
 		}
 		statement, err := optionalMoneyToCents(credit.LastStatementBalance)
 		if err != nil {
-			return nil, fmt.Errorf("credit liability %q statement balance: %w", credit.AccountID, err)
+			skip(credit.AccountID, "invalid statement balance")
+			continue
 		}
 		statementDay, err := dateDay(credit.LastStatementIssueDate)
 		if err != nil {
-			return nil, fmt.Errorf("credit liability %q statement date: %w", credit.AccountID, err)
+			skip(credit.AccountID, "invalid statement date")
+			continue
 		}
 		dueDay, err := dateDay(credit.NextPaymentDueDate)
 		if err != nil {
-			return nil, fmt.Errorf("credit liability %q due date: %w", credit.AccountID, err)
+			skip(credit.AccountID, "invalid due date")
+			continue
 		}
 		merge(canon.Liability{
 			AccountRef:         credit.AccountID,
@@ -117,19 +171,23 @@ func normalizeLiabilities(
 	for _, student := range liabilities.Student {
 		minimum, err := optionalMoneyToCents(student.MinimumPayment)
 		if err != nil {
-			return nil, fmt.Errorf("student liability %q minimum payment: %w", student.AccountID, err)
+			skip(student.AccountID, "invalid minimum payment")
+			continue
 		}
 		statement, err := optionalMoneyToCents(student.LastStatementBalance)
 		if err != nil {
-			return nil, fmt.Errorf("student liability %q statement balance: %w", student.AccountID, err)
+			skip(student.AccountID, "invalid statement balance")
+			continue
 		}
 		statementDay, err := dateDay(student.LastStatementIssueDate)
 		if err != nil {
-			return nil, fmt.Errorf("student liability %q statement date: %w", student.AccountID, err)
+			skip(student.AccountID, "invalid statement date")
+			continue
 		}
 		dueDay, err := dateDay(student.NextPaymentDueDate)
 		if err != nil {
-			return nil, fmt.Errorf("student liability %q due date: %w", student.AccountID, err)
+			skip(student.AccountID, "invalid due date")
+			continue
 		}
 		merge(canon.Liability{
 			AccountRef:         student.AccountID,
@@ -143,11 +201,13 @@ func normalizeLiabilities(
 	for _, mortgage := range liabilities.Mortgage {
 		minimum, err := optionalMoneyToCents(mortgage.NextMonthlyPayment)
 		if err != nil {
-			return nil, fmt.Errorf("mortgage liability %q monthly payment: %w", mortgage.AccountID, err)
+			skip(mortgage.AccountID, "invalid monthly payment")
+			continue
 		}
 		dueDay, err := dateDay(mortgage.NextPaymentDueDate)
 		if err != nil {
-			return nil, fmt.Errorf("mortgage liability %q due date: %w", mortgage.AccountID, err)
+			skip(mortgage.AccountID, "invalid due date")
+			continue
 		}
 		apr := float64(0)
 		if mortgage.InterestPercentage != nil {
@@ -165,14 +225,16 @@ func normalizeLiabilities(
 	for _, accountID := range order {
 		liability := byAccount[accountID]
 		if liability.AccountRef == "" {
-			return nil, fmt.Errorf("Plaid liability account id is empty")
+			skip(accountID, "missing account id")
+			continue
 		}
 		if math.IsNaN(liability.APR) || math.IsInf(liability.APR, 0) {
-			return nil, fmt.Errorf("Plaid liability %q APR is not finite", accountID)
+			skip(accountID, "invalid APR")
+			continue
 		}
 		canonicalLiabilities = append(canonicalLiabilities, liability)
 	}
-	return canonicalLiabilities, nil
+	return canonicalLiabilities, skipped
 }
 
 func canonicalAccountType(accountType, subtype string) (canon.AccountType, error) {
@@ -211,6 +273,15 @@ func canonicalPlaidCurrency(isoCurrency, unofficialCurrency string) (string, err
 	return isoCurrency, nil
 }
 
+// currencySkipDetail reports the offending currency code for a skipped
+// record. Codes are static provider vocabulary, never personal data.
+func currencySkipDetail(isoCurrency, unofficialCurrency string) string {
+	if unofficialCurrency != "" {
+		return strings.ToUpper(unofficialCurrency)
+	}
+	return strings.ToUpper(isoCurrency)
+}
+
 func optionalMoneyToCents(amount *float64) (int64, error) {
 	if amount == nil {
 		return 0, nil
@@ -239,4 +310,11 @@ func dateDay(date string) (int, error) {
 		return 0, fmt.Errorf("date %q must use valid YYYY-MM-DD form", date)
 	}
 	return parsed.Day(), nil
+}
+
+// validISODate reports whether date is a real calendar date in strict
+// YYYY-MM-DD form.
+func validISODate(date string) bool {
+	parsed, err := time.Parse("2006-01-02", date)
+	return err == nil && parsed.Format("2006-01-02") == date
 }
