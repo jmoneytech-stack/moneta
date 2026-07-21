@@ -13,7 +13,7 @@ The Link flow creates and exchanges Plaid tokens, encrypts permanent access toke
 The complete Link, transactions, balances, liabilities, encrypted persistence, and atomic ingestion path has been verified against Plaid Sandbox.
 The hardening stack addresses the confirmed review findings before Phase 2 begins.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
-`moneta status` is the first AXI read, emitting TOON for agent consumers; the remaining AXI reads and the REST API are next.
+`moneta status`, `moneta accounts`, and `moneta tx` are the first AXI reads, emitting TOON for agent consumers; the remaining AXI reads and the REST API are next.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -87,6 +87,30 @@ With nothing linked it says so and points at `moneta link`.
 Flags: `--json` emits compact JSON instead of TOON, and `--limit` / `--full` control row truncation (default 20).
 Exit codes follow the AXI convention: 0 ok, 1 error, 2 usage, and 3 when an item reports `login_required` and needs reconnection.
 Output never includes amounts, account names, or credentials.
+
+## Accounts
+
+```sh
+go run ./cmd/moneta accounts [--type credit_card] [--json] [--limit N | --full]
+```
+
+`moneta accounts` prints the plan's four-field schema (name, type, balance, status) as a TOON table, with a summary block of total/active/per-type counts.
+Balance is the latest synced snapshot in dollars, `null` when the account has none yet.
+`--type` filters to one canonical type (`checking`, `savings`, `credit_card`, `loan`, `investment`, `asset`).
+`--entity` is deferred: Phase 1 is single-entity, so it would be a no-op today.
+Exit codes: 0 ok, 1 error, 2 usage.
+
+## Transactions
+
+```sh
+go run ./cmd/moneta tx [--from 2026-07-01 --to 2026-07-31] [--account checking] [--search grocery] [--json] [--limit N | --full]
+```
+
+`moneta tx` prints an aggregate summary over every match (count, signed total, inflow, outflow in dollars), then a TOON table of date, amount, merchant, status, account, newest first, 20 rows by default with a truncation line.
+`--from`/`--to` are inclusive YYYY-MM-DD dates, `--account` is a case-insensitive account-name substring, and `--search` is a case-insensitive merchant substring.
+With no matches, the hint suggests widening the filters.
+Exit codes: 0 ok, 1 error, 2 usage.
+Deferred plan filters for later slices: `--cat`, `--merchant`, `--entity`, `--min`/`--max`.
 
 ## Library sync path
 
