@@ -1,0 +1,14 @@
+empty: ""
+padded: " padded "
+bool_like: "true"
+null_like: "null"
+numeric_like: "05"
+negative_like: "-5"
+with_colon: "a: b"
+with_comma: "hello, world"
+with_brackets: "a[0]"
+with_quote: "say \"hi\""
+with_backslash: "C:\\temp"
+hyphen_only: "-"
+unicode: cafe ☕
+spaces_ok: internal spaces are fine

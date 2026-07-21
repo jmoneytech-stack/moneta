@@ -12,7 +12,8 @@ Phase 1 implementation and post-review hardening are complete pending final main
 The Link flow creates and exchanges Plaid tokens, encrypts permanent access tokens before SQLite persistence, and rejects every non-loopback bind.
 The complete Link, transactions, balances, liabilities, encrypted persistence, and atomic ingestion path has been verified against Plaid Sandbox.
 The hardening stack addresses the confirmed review findings before Phase 2 begins.
-The `moneta link` and `moneta sync` commands run the connection and sync flows; the AXI read surface and REST API are next.
+The `moneta link` and `moneta sync` commands run the connection and sync flows.
+`moneta status` is the first AXI read, emitting TOON for agent consumers; the remaining AXI reads and the REST API are next.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -72,6 +73,20 @@ go run ./cmd/moneta sync
 `moneta sync` pulls incremental transactions, balances, and liabilities for every linked Plaid item, or one item with `--item <item-id>`.
 Each item prints a one-line summary, including the count of single-row poison records skipped so the sync could still advance.
 Batches and cursors commit atomically, so re-running after a failure is safe.
+
+## Status
+
+After linking and syncing, inspect connection health with the same environment (`MONETA_DB_PATH`, or `--db`):
+
+```sh
+go run ./cmd/moneta status
+```
+
+`moneta status` reads only the local database and prints TOON on stdout: a summary block (item, account, and needs-attention counts), one row per linked item with institution, stored health, account and transaction counts, and last-sync time, then a next-step hint.
+With nothing linked it says so and points at `moneta link`.
+Flags: `--json` emits compact JSON instead of TOON, and `--limit` / `--full` control row truncation (default 20).
+Exit codes follow the AXI convention: 0 ok, 1 error, 2 usage, and 3 when an item reports `login_required` and needs reconnection.
+Output never includes amounts, account names, or credentials.
 
 ## Library sync path
 

@@ -16,7 +16,8 @@ Connect real institutions through Plaid, sync transactions/balances/liabilities 
 ## Current Priority
 
 Phase 1 implementation and post-review hardening are complete, and the single-row poison sync blocker is resolved (skip-with-signal; see moneta-plan.md).
-Phase 2 continues with the production `moneta sync` CLI on the library path, then the AXI read surface and REST mirror.
+Production `moneta sync` ships on the library path (PR #2), and `moneta status` plus the shared TOON/JSON output path (`internal/toon`, `internal/cli`) are done.
+Phase 2 continues with the remaining AXI read commands, then the REST mirror.
 
 ## Non-Goals
 
