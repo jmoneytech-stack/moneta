@@ -63,6 +63,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "status":
+		return runStatus(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -276,4 +278,5 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "commands:")
 	fmt.Fprintln(writer, "  link    connect an institution through Plaid Link")
 	fmt.Fprintln(writer, "  sync    sync transactions, balances, and liabilities for linked items")
+	fmt.Fprintln(writer, "  status  show linked items, health, and last-sync signals (TOON on stdout)")
 }

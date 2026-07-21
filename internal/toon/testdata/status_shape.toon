@@ -1,0 +1,8 @@
+summary:
+  items: 2
+  accounts: 5
+  needs_attention: 1
+items[2]{provider,item,institution,status,accounts,transactions,last_sync}:
+  plaid,item-1,Example Bank,ok,3,142,"2026-07-20T14:03:11.123Z"
+  plaid,item-2,Other Union,login_required,2,98,""
+hint: re-run moneta link to reconnect items with status login_required

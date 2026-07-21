@@ -9,8 +9,8 @@ Full architecture: `docs/moneta-plan.md`.
 ## Current Goal
 
 Phase 1 implementation and post-review hardening are complete.
-Phase 2 AXI CLI and REST work is next.
-It begins with the single-row poison sync blocker documented in `docs/moneta-plan.md`; do not ship a production sync entrypoint until that blocker is fixed.
+Phase 2a-2c are done: the single-row poison skip, production `moneta sync` on the library path (PR #2), and `moneta status` with the shared TOON/JSON output path (`internal/toon`, `internal/cli`).
+Next is the remaining AXI read surface (`accounts`, `tx`, `spend`, and friends per `docs/moneta-plan.md`), then the REST mirror.
 
 ## Working Rules
 

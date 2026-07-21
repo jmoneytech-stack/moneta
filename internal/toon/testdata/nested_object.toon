@@ -1,0 +1,7 @@
+user:
+  id: 123
+  name: Ada
+  address:
+    city: Portland
+    zip: "97205"
+empty:
