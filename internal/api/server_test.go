@@ -108,6 +108,12 @@ func seedAPITestDB(t *testing.T, db *sql.DB) {
 	`, checkingID, creditID); err != nil {
 		t.Fatalf("insert balances: %v", err)
 	}
+	if _, err := db.Exec(`
+		INSERT INTO credit_terms (account_id, limit_cents, apr, due_day)
+		VALUES (?, 1000000, 22.99, 15)
+	`, creditID); err != nil {
+		t.Fatalf("insert credit terms: %v", err)
+	}
 	insertTransaction := func(amount int64, merchant string, category any, excluded int, hash string) {
 		t.Helper()
 		if _, err := db.Exec(`
@@ -152,6 +158,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/spend?period=2026-07",
 		"/v1/cashflow?period=2026-07",
 		"/v1/networth",
+		"/v1/debts",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
@@ -185,6 +192,7 @@ func TestAPIReadRoutes(t *testing.T) {
 		{"/v1/spend?period=2026-07", []string{`"total_spend":25`, `"category":"Food and Drink"`, `"merchant":"Grocery Mart"`}},
 		{"/v1/cashflow?period=2026-07", []string{`"inflow":1000`, `"outflow":25`, `"net":975`, `"savings_rate":0.975`}},
 		{"/v1/networth?as_of=2026-07-22", []string{`"assets":1200`, `"liabilities":3400`, `"networth":-2200`, `"type":"credit_card"`}},
+		{"/v1/debts", []string{`"total_debt":3400`, `"name":"Credit Example"`, `"utilization":0.34`, `"apr":0.2299`}},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -246,6 +254,7 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/cashflow?from=2026-07-01", "must be provided together"},
 		{"/v1/networth?as_of=bad", "valid YYYY-MM-DD"},
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
+		{"/v1/debts?unexpected=value", "unknown query parameter"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {

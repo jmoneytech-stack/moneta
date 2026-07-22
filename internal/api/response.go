@@ -352,6 +352,59 @@ func cashflowHint(summary store.CashflowSummary, filter store.CashflowFilter) st
 	)
 }
 
+func buildDebtsDocument(report store.DebtReport) toon.Object {
+	table := toon.Table{
+		Fields: []string{"name", "type", "balance", "limit", "utilization", "apr", "due_day"},
+		Rows:   make([][]any, 0, len(report.Debts)),
+	}
+	for _, debt := range report.Debts {
+		balance := any(nil)
+		if debt.BalanceCents != nil {
+			balance = cli.Money(*debt.BalanceCents)
+		}
+		limit := any(nil)
+		if debt.LimitCents != nil {
+			limit = cli.Money(*debt.LimitCents)
+		}
+		utilization := any(nil)
+		if debt.BalanceCents != nil && debt.LimitCents != nil {
+			if value := cli.Ratio(*debt.BalanceCents, *debt.LimitCents, 4); value != nil {
+				utilization = *value
+			}
+		}
+		apr := any(nil)
+		if debt.APRBasisPoints != nil {
+			apr = cli.ScaledInteger(*debt.APRBasisPoints, 4)
+		}
+		dueDay := any(nil)
+		if debt.DueDay != nil {
+			dueDay = *debt.DueDay
+		}
+		table.Rows = append(table.Rows, []any{
+			debt.Name, debt.Type, balance, limit, utilization, apr, dueDay,
+		})
+	}
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "count", Value: report.Count},
+			{Key: "total_debt", Value: cli.Money(report.TotalDebtCents)},
+			{Key: "missing_balance", Value: report.MissingBalance},
+		}},
+		{Key: "debts", Value: table},
+		{Key: "hint", Value: debtsHint(report)},
+	}
+}
+
+func debtsHint(report store.DebtReport) string {
+	if report.Count == 0 {
+		return "no credit-card or loan accounts yet; run moneta sync"
+	}
+	if report.MissingBalance > 0 {
+		return "run moneta sync to pull balances for debt accounts with no snapshot"
+	}
+	return "run moneta networth to compare total debt with assets"
+}
+
 func buildNetworthDocument(report store.NetworthReport, filter store.NetworthFilter) toon.Object {
 	asOf := any(nil)
 	if report.AsOf != "" {

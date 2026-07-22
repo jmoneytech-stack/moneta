@@ -13,7 +13,7 @@ The Link flow creates and exchanges Plaid tokens, encrypts permanent access toke
 The complete Link, transactions, balances, liabilities, encrypted persistence, and atomic ingestion path has been verified against Plaid Sandbox.
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
-`moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, and `moneta networth` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; the remaining AXI reads are next.
+`moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -43,6 +43,9 @@ Run the current schema and canonical-contract checks with:
 ```sh
 go test ./...
 ```
+
+CI runs on pull requests and pushes to `main`: build, vet, tests, CGO-free tests, and race tests.
+Full staticcheck and golangci-lint are not CI gates yet because the established Plaid ST1005 / errcheck baseline remains; touched code is checked locally without mass baseline cleanup.
 
 ## Plaid Sandbox Link
 
@@ -157,6 +160,20 @@ All stored accounts participate, including inactive accounts, because the curren
 Money remains integer cents internally and renders through `cli.Money`.
 Exit codes: 0 ok, 1 error, 2 usage.
 
+## Debts
+
+```sh
+go run ./cmd/moneta debts [--json]
+```
+
+Debts lists every credit-card and loan account using its latest balance snapshot and presents debt as a positive magnitude regardless of the stored balance sign.
+An account without a snapshot remains in the table with `balance: null`, increments `missing_balance`, and contributes nothing to `total_debt`.
+Credit-card limit, APR, and due day and loan APR are best-effort values from the existing terms tables; unavailable fields are `null`.
+Utilization is `balance / limit`, truncated toward zero to four decimal places, and is `null` when balance is missing or limit is absent, zero, or negative.
+Plaid APR enters SQLite as percentage points; output converts it to a decimal fraction rounded to the nearest basis point, so stored `22.99` renders as `0.2299`.
+Money remains integer cents internally and renders through `cli.Money`.
+Exit codes: 0 ok, 1 error, 2 usage.
+
 ## Read-only REST API
 
 Set the database path and an API key through the environment, then start the loopback server:
@@ -188,6 +205,7 @@ Read routes:
 | `GET /v1/spend` | `period` or `from` + `to`, `account`, `limit`, `full` |
 | `GET /v1/cashflow` | `period` or `from` + `to`, `account` |
 | `GET /v1/networth` | `as_of` |
+| `GET /v1/debts` | none |
 
 Period and date semantics match their CLI counterparts.
 Use `full=true` to disable a route's default 20-row limit.

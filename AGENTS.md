@@ -9,9 +9,9 @@ Full architecture: `docs/moneta-plan.md`.
 ## Current Goal
 
 Phase 1 implementation and post-review hardening are complete.
-Phase 2a-2h are done: the single-row poison skip, production `moneta sync` on the library path (PR #2), `moneta status` with the shared TOON/JSON output path (`internal/toon`, `internal/cli`), the `moneta accounts` / `moneta tx` / `moneta spend` / `moneta cashflow` / `moneta networth` reads, and the authenticated loopback `moneta serve` JSON mirror.
+Phase 2a-2j are done: the single-row poison skip, production `moneta sync` on the library path (PR #2), `moneta status` with the shared TOON/JSON output path (`internal/toon`, `internal/cli`), the `moneta accounts` / `moneta tx` / `moneta spend` / `moneta cashflow` / `moneta networth` / `moneta debts` reads, the authenticated loopback `moneta serve` JSON mirror, and GitHub Actions CI for build, vet, tests, CGO-free tests, and race tests.
 The post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete: the confirmed single-row ingest wedge paths are closed, CLI exit codes are uniform (usage = 2), the `tx` aggregate excludes transfers, skip counts persist per import run, reauth failures persist `login_required` so `moneta status` exit 3 is live, and the TOON encoder is hardened.
-Next is the remaining AXI read surface (`debts` and friends per `docs/moneta-plan.md`), followed by the later analytics phases.
+Phase 2 is complete. Do not begin Phase 3 analytics until explicitly requested by the maintainer.
 
 ## Working Rules
 

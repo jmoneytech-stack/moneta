@@ -54,6 +54,7 @@ func NewHandler(db *sql.DB, apiKey string, logger *log.Logger) (http.Handler, er
 		{"/v1/spend", s.handleSpend},
 		{"/v1/cashflow", s.handleCashflow},
 		{"/v1/networth", s.handleNetworth},
+		{"/v1/debts", s.handleDebts},
 	}
 	for _, route := range routes {
 		mux.Handle("GET "+route.path, route.handler)
