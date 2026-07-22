@@ -13,7 +13,7 @@ The Link flow creates and exchanges Plaid tokens, encrypts permanent access toke
 The complete Link, transactions, balances, liabilities, encrypted persistence, and atomic ingestion path has been verified against Plaid Sandbox.
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
-`moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, and `moneta networth` are the first AXI reads, emitting TOON for agent consumers; the remaining AXI reads and the REST API are next.
+`moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, and `moneta networth` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; the remaining AXI reads are next.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -156,6 +156,47 @@ Accounts without an eligible snapshot are counted in `missing_balance` and omitt
 All stored accounts participate, including inactive accounts, because the current schema does not track historical active intervals.
 Money remains integer cents internally and renders through `cli.Money`.
 Exit codes: 0 ok, 1 error, 2 usage.
+
+## Read-only REST API
+
+Set the database path and an API key through the environment, then start the loopback server:
+
+```sh
+export MONETA_DB_PATH="$HOME/.local/share/moneta/moneta.db"
+export MONETA_API_KEY="replace-with-a-long-random-key"
+go run ./cmd/moneta serve
+```
+
+The default listen address is `127.0.0.1:8080`.
+Every route requires `X-API-Key`, and the key is compared in constant time after fixed-length hashing.
+The key is never logged; prefer `MONETA_API_KEY` because passing `--api-key` can expose it in the process argument list.
+Responses are JSON only, set `Cache-Control: no-store`, and render money as exact decimal numbers through the same `cli.Money` boundary as CLI JSON.
+
+```sh
+curl -sS \
+  -H "X-API-Key: $MONETA_API_KEY" \
+  "http://127.0.0.1:8080/v1/networth?as_of=2026-07-22"
+```
+
+Read routes:
+
+| Route | Query parameters |
+|---|---|
+| `GET /v1/status` | `limit`, `full` |
+| `GET /v1/accounts` | `type`, `limit`, `full` |
+| `GET /v1/transactions` | `from`, `to`, `account`, `search`, `limit`, `full` |
+| `GET /v1/spend` | `period` or `from` + `to`, `account`, `limit`, `full` |
+| `GET /v1/cashflow` | `period` or `from` + `to`, `account` |
+| `GET /v1/networth` | `as_of` |
+
+Period and date semantics match their CLI counterparts.
+Use `full=true` to disable a route's default 20-row limit.
+Invalid queries return JSON with status 400; missing or incorrect keys return 401 without revealing authentication details.
+The database opens once at process startup, and SIGINT/SIGTERM triggers graceful shutdown.
+Exit codes: 0 clean stop, 1 runtime error, 2 usage/configuration.
+
+Non-loopback binding is refused unless both a non-loopback `--listen` address and `--allow-non-loopback` are supplied.
+That opt-in logs a prominent exposure warning; Moneta does not provide TLS, public-internet CORS, or write APIs.
 
 ## Library sync path
 

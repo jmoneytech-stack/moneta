@@ -57,6 +57,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runCashflow(ctx, args[1:], stdout, stderr)
 	case "networth":
 		return runNetworth(ctx, args[1:], stdout, stderr)
+	case "serve":
+		return runServe(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -337,4 +339,5 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "  spend     summarize posted spending by category and merchant (TOON on stdout)")
 	fmt.Fprintln(writer, "  cashflow  summarize posted inflow, outflow, net, and savings rate (TOON on stdout)")
 	fmt.Fprintln(writer, "  networth  summarize latest assets, liabilities, and net worth (TOON on stdout)")
+	fmt.Fprintln(writer, "  serve     serve authenticated JSON reads over loopback HTTP")
 }
