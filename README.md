@@ -113,6 +113,22 @@ With no matches, the hint suggests widening the filters.
 Exit codes: 0 ok, 1 error, 2 usage.
 Deferred plan filters for later slices: `--cat`, `--merchant`, `--entity`, `--min`/`--max`.
 
+## Spending
+
+```sh
+go run ./cmd/moneta spend [--period 2026-07 | --from 2026-07-01 --to 2026-07-31] [--account checking] [--json] [--limit N | --full]
+```
+
+With no period flags, `moneta spend` uses the current calendar month in the host's local timezone.
+`--period` accepts a calendar month in YYYY-MM form; custom `--from` / `--to` dates are inclusive and must be supplied together.
+`--account` is a case-insensitive literal account-name substring.
+
+The summary reports period bounds, posted spending transaction count, and positive `total_spend` in dollars.
+Spend includes posted outflows only and always applies `excluded = 0`, so pending rows, transfers, card payments, and inflows do not affect the totals or breakdowns.
+Source outflows remain negative cents in SQLite; the spend command deliberately presents them as positive spend.
+Category and merchant tables are ordered by spend, use an `Uncategorized` bucket when needed, and show 20 groups each by default with independent truncation lines.
+Exit codes: 0 ok, 1 error, 2 usage.
+
 ## Library sync path
 
 `moneta sync` wraps the library sync path: product code loads a linked connection with `store.GetProviderItem` and passes it to `core.SyncProviderItem` with the secret cipher and provider constructor.

@@ -51,6 +51,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runAccounts(ctx, args[1:], stdout, stderr)
 	case "tx":
 		return runTx(ctx, args[1:], stdout, stderr)
+	case "spend":
+		return runSpend(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -328,4 +330,5 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "  status  show linked items, health, and last-sync signals (TOON on stdout)")
 	fmt.Fprintln(writer, "  accounts  list accounts with latest balances (TOON on stdout)")
 	fmt.Fprintln(writer, "  tx        list transactions with an aggregate header (TOON on stdout)")
+	fmt.Fprintln(writer, "  spend     summarize posted spending by category and merchant (TOON on stdout)")
 }
