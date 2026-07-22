@@ -207,6 +207,19 @@ func (s *server) handleNetworth(writer http.ResponseWriter, request *http.Reques
 	writeDocument(writer, buildNetworthDocument(report, filter))
 }
 
+func (s *server) handleDebts(writer http.ResponseWriter, request *http.Request) {
+	if err := validateQueryKeys(request.URL.Query()); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	report, err := store.ReadDebts(request.Context(), s.db)
+	if err != nil {
+		s.internalError(writer, "read debts", err)
+		return
+	}
+	writeDocument(writer, buildDebtsDocument(report))
+}
+
 func (s *server) internalError(writer http.ResponseWriter, operation string, err error) {
 	s.logger.Printf("REST %s: %v", operation, err)
 	writeError(writer, http.StatusInternalServerError, "internal server error")

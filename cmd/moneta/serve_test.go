@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -49,18 +51,55 @@ func TestRunServeStopsCleanlyOnCanceledContext(t *testing.T) {
 	t.Setenv(apiKeyEnvironment, apiKey)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	time.AfterFunc(50*time.Millisecond, cancel)
 
-	var stdout, stderr bytes.Buffer
-	code := run(ctx, []string{"serve", "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	var stderr synchronizedBuffer
+	codeCh := make(chan int, 1)
+	go func() {
+		codeCh <- run(ctx, []string{"serve", "--listen", "127.0.0.1:0"}, io.Discard, &stderr)
+	}()
+
+	startupTimeout := time.NewTimer(10 * time.Second)
+	defer startupTimeout.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !strings.Contains(stderr.String(), "REST listening on 127.0.0.1:") {
+		select {
+		case code := <-codeCh:
+			t.Fatalf("run() exited before startup with code %d (stderr %q)", code, stderr.String())
+		case <-startupTimeout.C:
+			cancel()
+			<-codeCh
+			t.Fatalf("run() did not start in time (stderr %q)", stderr.String())
+		case <-ticker.C:
+		}
+	}
+
+	cancel()
+	code := <-codeCh
 	if code != 0 {
 		t.Fatalf("run() code = %d, want 0 (stderr %q)", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "REST listening on 127.0.0.1:") ||
-		!strings.Contains(stderr.String(), "authentication enabled") {
+	if !strings.Contains(stderr.String(), "authentication enabled") {
 		t.Errorf("startup log = %q", stderr.String())
 	}
 	if strings.Contains(stderr.String(), apiKey) {
 		t.Error("startup log leaked API key")
 	}
+}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (buffer *synchronizedBuffer) Write(value []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.Write(value)
+}
+
+func (buffer *synchronizedBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.String()
 }
