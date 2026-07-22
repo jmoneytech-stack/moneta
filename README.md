@@ -13,7 +13,7 @@ The Link flow creates and exchanges Plaid tokens, encrypts permanent access toke
 The complete Link, transactions, balances, liabilities, encrypted persistence, and atomic ingestion path has been verified against Plaid Sandbox.
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
-`moneta status`, `moneta accounts`, and `moneta tx` are the first AXI reads, emitting TOON for agent consumers; the remaining AXI reads and the REST API are next.
+`moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, and `moneta cashflow` are the first AXI reads, emitting TOON for agent consumers; the remaining AXI reads and the REST API are next.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -127,6 +127,19 @@ The summary reports period bounds, posted spending transaction count, and positi
 Spend includes posted outflows only and always applies `excluded = 0`, so pending rows, transfers, card payments, and inflows do not affect the totals or breakdowns.
 Source outflows remain negative cents in SQLite; the spend command deliberately presents them as positive spend.
 Category and merchant tables are ordered by spend, use an `Uncategorized` bucket when needed, and show 20 groups each by default with independent truncation lines.
+Exit codes: 0 ok, 1 error, 2 usage.
+
+## Cash flow
+
+```sh
+go run ./cmd/moneta cashflow [--period 2026-07 | --from 2026-07-01 --to 2026-07-31] [--account checking] [--json]
+```
+
+Cash flow uses the same period and account-filter contract as spend: current local calendar month by default, or an explicit YYYY-MM month / inclusive custom date pair.
+It includes posted rows with `excluded = 0`; refunds and other positive rows count as inflow, while negative rows are presented as positive outflow magnitude.
+The summary reports count, inflow, outflow, signed net (`inflow - outflow`), and `savings_rate`.
+Savings rate is `net / inflow`, truncated toward zero to four decimal places (`0.1234` means 12.34%); it is `null` when inflow is zero.
+Money remains integer cents internally and renders through `cli.Money`; rate construction uses integer arithmetic, never float64.
 Exit codes: 0 ok, 1 error, 2 usage.
 
 ## Library sync path

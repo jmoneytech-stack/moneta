@@ -14,11 +14,6 @@ import (
 	"github.com/jmoneytech-stack/moneta/internal/toon"
 )
 
-type spendPeriod struct {
-	From string
-	To   string
-}
-
 // runSpend prints posted, non-excluded outflows for one period as positive
 // spend. It is read-only against the local database. Exit codes: 0 ok, 1
 // runtime error, 2 usage.
@@ -59,7 +54,7 @@ func runSpend(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, "error: --limit must be at least 1")
 		return 2
 	}
-	period, err := resolveSpendPeriod(*periodValue, *from, *to, time.Now())
+	period, err := resolveReadPeriod(*periodValue, *from, *to, time.Now())
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
@@ -100,44 +95,6 @@ func runSpend(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	return 0
-}
-
-// resolveSpendPeriod accepts either --period YYYY-MM, a complete custom
-// --from/--to pair, or no period flags (the current calendar month in the
-// host's local timezone).
-func resolveSpendPeriod(periodValue, from, to string, now time.Time) (spendPeriod, error) {
-	if periodValue != "" && (from != "" || to != "") {
-		return spendPeriod{}, fmt.Errorf("--period cannot be combined with --from or --to")
-	}
-	if (from == "") != (to == "") {
-		return spendPeriod{}, fmt.Errorf("--from and --to must be provided together")
-	}
-	if from != "" {
-		if err := validateCLIDate("from", from); err != nil {
-			return spendPeriod{}, err
-		}
-		if err := validateCLIDate("to", to); err != nil {
-			return spendPeriod{}, err
-		}
-		if from > to {
-			return spendPeriod{}, fmt.Errorf("--from must not be after --to")
-		}
-		return spendPeriod{From: from, To: to}, nil
-	}
-
-	if periodValue == "" {
-		periodValue = now.Format("2006-01")
-	}
-	month, err := time.Parse("2006-01", periodValue)
-	if err != nil || month.Format("2006-01") != periodValue {
-		return spendPeriod{}, fmt.Errorf("--period must use valid YYYY-MM form, got %q", periodValue)
-	}
-	first := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, now.Location())
-	last := first.AddDate(0, 1, -1)
-	return spendPeriod{
-		From: first.Format("2006-01-02"),
-		To:   last.Format("2006-01-02"),
-	}, nil
 }
 
 func buildSpendDoc(report store.SpendReport, filter store.SpendFilter) toon.Object {
