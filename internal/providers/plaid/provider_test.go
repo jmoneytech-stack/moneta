@@ -175,6 +175,31 @@ func TestProviderSyncPaginatesAndNormalizesCompleteBatch(t *testing.T) {
 	}
 }
 
+func TestNormalizeCurrentBalanceUsesPlaidLiabilitySign(t *testing.T) {
+	tests := []struct {
+		name        string
+		accountType canon.AccountType
+		raw         float64
+		want        int64
+	}{
+		{name: "credit card amount owed", accountType: canon.AccountTypeCreditCard, raw: 410, want: 41000},
+		{name: "credit card in credit", accountType: canon.AccountTypeCreditCard, raw: -50, want: -5000},
+		{name: "loan principal remaining", accountType: canon.AccountTypeLoan, raw: 65262, want: 6526200},
+		{name: "asset sign passes through", accountType: canon.AccountTypeChecking, raw: -25, want: -2500},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeCurrentBalanceToCents(test.accountType, &test.raw)
+			if err != nil {
+				t.Fatalf("normalizeCurrentBalanceToCents() error: %v", err)
+			}
+			if got != test.want {
+				t.Errorf("normalizeCurrentBalanceToCents() = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
 func TestProviderBalanceDateUsesLocalCalendar(t *testing.T) {
 	current := 100.00
 	provider := mustTestProvider(t, &fakeGateway{})

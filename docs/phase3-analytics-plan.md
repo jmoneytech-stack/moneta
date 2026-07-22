@@ -36,14 +36,14 @@ Do **not** commit or push unless the maintainer explicitly asks.
 
 ### D3-1. Liability `current_cents` is normalized to positive-when-owed at ingest; readers stop taking `abs()`.
 
-Today Plaid balances are stored as-is (`internal/providers/plaid/provider.go:381`), and the analytics readers take `abs()` of a liability balance (`internal/store/networth.go:150-151`, `internal/store/debts.go:101-102`).
+Before PR1, Plaid balances were stored as-is (`internal/providers/plaid/provider.go:381`), and the analytics readers took `abs()` of a liability balance (`internal/store/networth.go:150-151`, `internal/store/debts.go:101-102`).
 That collapses a genuine credit balance (institution owes the user, e.g. an overpaid card) into positive debt - the Phase 2 review's M1.
 
 **Decided (Option A):** liability `current_cents` is normalized **at the ingest boundary** to a single convention - **positive = owed, negative = in credit** - and the reader `abs()` calls are removed.
 Assets are unaffected (their sign is already meaningful).
 The interim "abs = debt magnitude" behavior documented in `docs/phase2-polish-pr-plan.md` ends when PR1 lands.
 
-> **Verification gate inside PR1.** Which raw Plaid sign each liability type reports is **not yet confirmed in the tree** (the networth test seeds a loan `-100000` and a card `+300000`, but that is test data, not proof of Plaid's production convention). PR1 must confirm Plaid's `/liabilities/get` and balance sign per liability type against the Plaid docs and Sandbox **before** writing the backfill, because the backfill transform depends on it. See [Residual risks](#residual-risks--open-questions) R1.
+> **PR1 verification result.** Plaid's [`/liabilities/get` documentation](https://plaid.com/docs/api/products/liabilities/) defines credit current balance as positive when owed and negative when the lender owes the user, while loan current balance is remaining principal. The published Sandbox response confirms positive current balances for both types: `410` for its credit card and `65262` / `56302.06` for its student loan / mortgage. Plaid's raw convention therefore already matches D3-1 uniformly.
 
 ### D3-2. Optional money is nullable, never sentinel-zero.
 
@@ -85,8 +85,8 @@ The `moneta-plan.md:251` header ("Analytics (precomputed at sync ...)") and the 
 - No new tables. No precompute/materialized views. No change to exclusion / period / dedup / poison-skip logic.
 - Migration numbering continues from `000002`; PR1's backfill is `000003` (data-only `UPDATE`, reversible `.down.sql` that restores the prior sign iff the up-migration flipped anything).
 
-**Backfill scope (PR1).** The `000003` up-migration applies a deterministic transform to existing `balance_snapshots` rows for liability-type accounts only, matching the convention confirmed by R1.
-If verification shows Plaid already reports positive-when-owed uniformly, the migration is a **documented no-op** (existing negatives are genuine credits and are preserved) plus a preservation test; it is *not* a blind sign flip.
+**Backfill scope (PR1).** Verification confirmed that Plaid already reports positive-when-owed uniformly, so migration `000003` is a **documented no-op** with a preservation test.
+Existing negative liability snapshots are genuine credits and are preserved; the migration is *not* a blind sign flip.
 
 ---
 
@@ -123,8 +123,8 @@ PR2 (nullable money)   ─┴─► foundation complete ─┬─► PR3  networ
 ### Tests first
 ```
 TestNetworthCreditBalanceCountsAsAsset (store): a credit card with current_cents = -5000 (a $50
-  credit) reduces liabilities / raises net worth by $50 — asserts the OPPOSITE of today's abs()
-  behavior. Red before step 3.
+  credit) reduces liabilities / raises net worth by $50 — asserts the opposite of the pre-PR1
+  abs() behavior. Red before step 3.
 TestDebtsCreditBalanceReportedNegative (store): the same card appears with a negative owed balance,
   not +50.00.
 TestNetworthLoanStillCountsAsDebt / TestDebtsLoanStillPositive: a normal owed balance is unchanged.
@@ -267,7 +267,7 @@ TestDashboardComposesSections: asserts each section reads from its underlying st
 
 ## Residual risks / open questions
 
-- **R1 (blocks PR1 backfill).** Plaid's raw balance sign per liability type is unconfirmed in the tree. If loans (or any liability type) are reported owed-as-negative, the `000003` backfill must flip those specific rows; if everything is positive-when-owed, the backfill is a no-op and existing negatives are genuine credits to preserve. Resolve by verification before writing the migration - do not guess.
+- **R1 (resolved by PR1).** Plaid documentation and its published Sandbox `/liabilities/get` response confirm positive-when-owed current balances for credit-card and loan accounts. Migration `000003` is therefore a documented no-op that preserves existing negative credits.
 - **R2 (accepted limitation).** D3-2 cannot reclassify historical sentinel-0 optional-money rows to NULL (a stored `0` is ambiguous between "real zero" and "was missing"). Utilization for accounts whose limit predates PR2 stays sentinel-0 until a fresh sync overwrites that account's *current-day* row with NULL; historical days remain sentinel-0. Go-forward only, by design.
 - **R3 (maintainer input welcome, not blocking).** Two definitional choices: (a) the "fixed vs variable" split (PR8) needs a concrete rule - propose category-kind-based or recurring-linked (recurring is phase 4, so category-kind for now); (b) whether the dashboard is the no-arg `moneta` default or an explicit `moneta dashboard` subcommand. Defaults proposed in-line; confirm at PR4/PR10 time.
 - **R4 (scope boundary).** Without `moneta tag` / D2 (out of scope), all trends reflect provider categorization; a user cannot yet re-bucket a miscategorized merchant, so category trends inherit Plaid's category quality.

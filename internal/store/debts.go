@@ -8,8 +8,9 @@ import (
 )
 
 // DebtRow is one credit-card or loan account with its latest balance and
-// best-effort terms. BalanceCents is a positive debt magnitude. APRBasisPoints
-// is a decimal-fraction rate scaled by 10,000: 2299 renders as 0.2299.
+// best-effort terms. BalanceCents is positive when owed and negative when the
+// institution owes the user. APRBasisPoints is a decimal-fraction rate scaled
+// by 10,000: 2299 renders as 0.2299.
 type DebtRow struct {
 	Name           string
 	Type           string
@@ -98,9 +99,6 @@ func ReadDebts(ctx context.Context, db *sql.DB) (DebtReport, error) {
 			if amount == math.MinInt64 {
 				return report, fmt.Errorf("debt balance magnitude overflows integer cents")
 			}
-			if amount < 0 {
-				amount = -amount
-			}
 			debt.BalanceCents = &amount
 			if err := addDebtCents(&report.TotalDebtCents, amount); err != nil {
 				return report, err
@@ -150,7 +148,8 @@ func aprPercentToBasisPoints(percent float64) (int64, error) {
 }
 
 func addDebtCents(total *int64, amount int64) error {
-	if amount > 0 && *total > math.MaxInt64-amount {
+	if (amount > 0 && *total > math.MaxInt64-amount) ||
+		(amount < 0 && *total < math.MinInt64-amount) {
 		return fmt.Errorf("total debt overflows integer cents")
 	}
 	*total += amount

@@ -345,7 +345,7 @@ func (p *Provider) normalizeAccounts(
 		if account.Current == nil {
 			continue
 		}
-		current, err := optionalMoneyToCents(account.Current)
+		current, err := normalizeCurrentBalanceToCents(accountType, account.Current)
 		if err != nil {
 			skipped = append(skipped, canon.SkippedRecord{
 				Kind:   canon.RecordKindBalance,

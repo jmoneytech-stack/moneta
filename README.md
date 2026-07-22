@@ -154,7 +154,8 @@ go run ./cmd/moneta networth [--as-of 2026-07-22] [--json]
 By default, net worth uses each account's latest available balance and reports the newest selected balance date as `as_of`; it is `null` when no balance snapshots exist.
 `--as-of` selects each account's latest balance on or before the inclusive YYYY-MM-DD cutoff and echoes that requested date in the summary.
 Checking, savings, investment, and asset accounts contribute to assets.
-Credit-card and loan balances contribute to liabilities as positive debt magnitude, and signed net worth is `assets - liabilities`.
+Credit-card and loan balances use the canonical provider-boundary sign: positive means owed and negative means the institution owes the user.
+Signed net worth is `assets - liabilities`, so a negative liability credit raises net worth.
 Accounts without an eligible snapshot are counted in `missing_balance` and omitted from every money total; a by-type row with no eligible balances renders `balance: null` rather than inventing zero.
 All stored accounts participate, including inactive accounts, because the current schema does not track historical active intervals.
 Money remains integer cents internally and renders through `cli.Money`.
@@ -166,7 +167,8 @@ Exit codes: 0 ok, 1 error, 2 usage.
 go run ./cmd/moneta debts [--json]
 ```
 
-Debts lists every credit-card and loan account using its latest balance snapshot and presents debt as a positive magnitude regardless of the stored balance sign.
+Debts lists every credit-card and loan account using its latest balance snapshot and preserves the canonical balance sign.
+A positive balance is owed debt, while a negative balance is a genuine credit owed to the user.
 An account without a snapshot remains in the table with `balance: null`, increments `missing_balance`, and contributes nothing to `total_debt`.
 Credit-card limit, APR, and due day and loan APR are best-effort values from the existing terms tables; unavailable fields are `null`.
 Utilization is `balance / limit`, truncated toward zero to four decimal places, and is `null` when balance is missing or limit is absent, zero, or negative.

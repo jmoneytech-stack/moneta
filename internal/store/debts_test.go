@@ -17,7 +17,7 @@ func TestReadDebtsLatestBalancesAndTerms(t *testing.T) {
 
 	insertBalanceSnapshot(t, db, card, "2026-07-20", 300000)
 	insertBalanceSnapshot(t, db, card, "2026-07-22", 340000)
-	insertBalanceSnapshot(t, db, loan, "2026-07-22", -500000)
+	insertBalanceSnapshot(t, db, loan, "2026-07-22", 500000)
 	insertBalanceSnapshot(t, db, checking, "2026-07-22", 100000)
 	if _, err := db.Exec(`
 		INSERT INTO credit_terms (account_id, limit_cents, apr, due_day)
@@ -63,6 +63,40 @@ func TestReadDebtsLatestBalancesAndTerms(t *testing.T) {
 		travel.APRBasisPoints == nil || *travel.APRBasisPoints != 2299 ||
 		travel.DueDay == nil || *travel.DueDay != 15 {
 		t.Errorf("card row = %+v", travel)
+	}
+}
+
+func TestDebtsCreditBalanceReportedNegative(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID := insertEntity(t, db, "personal", "Personal")
+	card := insertAccountFull(t, db, entityID, "Credit Example", "credit_card", "card-1")
+	insertBalanceSnapshot(t, db, card, "2026-07-22", -5000)
+
+	report, err := ReadDebts(ctx, db)
+	if err != nil {
+		t.Fatalf("ReadDebts() error: %v", err)
+	}
+	if report.TotalDebtCents != -5000 || len(report.Debts) != 1 ||
+		report.Debts[0].BalanceCents == nil || *report.Debts[0].BalanceCents != -5000 {
+		t.Errorf("report = %+v, want one -5000 credit balance", report)
+	}
+}
+
+func TestDebtsLoanStillPositive(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID := insertEntity(t, db, "personal", "Personal")
+	loan := insertAccountFull(t, db, entityID, "Loan Example", "loan", "loan-1")
+	insertBalanceSnapshot(t, db, loan, "2026-07-22", 5000)
+
+	report, err := ReadDebts(ctx, db)
+	if err != nil {
+		t.Fatalf("ReadDebts() error: %v", err)
+	}
+	if report.TotalDebtCents != 5000 || len(report.Debts) != 1 ||
+		report.Debts[0].BalanceCents == nil || *report.Debts[0].BalanceCents != 5000 {
+		t.Errorf("report = %+v, want one 5000 loan balance", report)
 	}
 }
 

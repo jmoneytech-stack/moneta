@@ -70,12 +70,10 @@ Test: assert the header on a POST to a known route.
 
 ## Explicitly excluded
 
-**M1 (liability credit balances misreported as debt) is NOT in this stack.**
-`networth.go:150-152` and `debts.go:101-103` take `abs()` of liability balances, which flips a genuine credit balance (institution owes the user) into positive debt.
-The correct fix requires deciding the per-account-type balance sign convention, which interacts with the deferred balance-currency carry-forward in `docs/moneta-plan.md:192-193`.
-Patching `abs()` in isolation would encode a convention nobody has decided.
-It is carried into `docs/phase3-analytics-plan.md` as a named Decision; until that lands, the documented product behavior is: liability balances are reported as positive owed magnitudes, and a credit balance on a liability is (incorrectly but knowingly) counted as debt.
-Do not "fix" this in passing here.
+**M1 (liability credit balances misreported as debt) was intentionally excluded from this stack and is resolved by Phase 3 PR1 (D3-1).**
+Plaid documentation and its published Sandbox `/liabilities/get` fixture confirm that credit-card and loan current balances are positive when owed and negative when the institution owes the user.
+Phase 3 PR1 makes that the canonical provider-boundary convention and removes the reader `abs()` behavior.
+The exclusion below remains as the historical execution boundary for this completed Phase 2 plan.
 
 ## Copy-paste agent prompt
 

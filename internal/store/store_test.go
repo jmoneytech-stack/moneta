@@ -27,8 +27,8 @@ func TestOpenAppliesInitialSchemaIdempotently(t *testing.T) {
 	if err := db.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 2 {
-		t.Fatalf("migration count = %d, want 2", migrationCount)
+	if migrationCount != 3 {
+		t.Fatalf("migration count = %d, want 3", migrationCount)
 	}
 
 	for _, table := range []string{
@@ -201,6 +201,90 @@ func TestImportRunsSkippedMigration(t *testing.T) {
 	if exists {
 		t.Fatal("import_runs.skipped still exists after down migration")
 	}
+}
+
+func TestMigration000003IsNoOpAndPreservesGenuineCredits(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "moneta.db"))
+	if err != nil {
+		t.Fatalf("open pre-000003 database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close pre-000003 database: %v", err)
+		}
+	})
+	if _, err := db.Exec(`
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		) STRICT
+	`); err != nil {
+		t.Fatalf("create migration table: %v", err)
+	}
+	for version, name := range []string{
+		"000001_initial_schema.up.sql",
+		"000002_import_runs_skipped.up.sql",
+	} {
+		migrationSQL, err := migrationFiles.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatalf("read migration %q: %v", name, err)
+		}
+		if _, err := db.Exec(string(migrationSQL)); err != nil {
+			t.Fatalf("apply migration %q: %v", name, err)
+		}
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+			version+1,
+			name,
+		); err != nil {
+			t.Fatalf("record migration %q: %v", name, err)
+		}
+	}
+
+	entityID := insertEntity(t, db, "personal", "Personal")
+	card := insertAccountFull(t, db, entityID, "Credit Example", "credit_card", "card-1")
+	loan := insertAccountFull(t, db, entityID, "Loan Example", "loan", "loan-1")
+	checking := insertAccountFull(t, db, entityID, "Checking Example", "checking", "checking-1")
+	insertBalanceSnapshot(t, db, card, "2026-07-22", -5000)
+	insertBalanceSnapshot(t, db, loan, "2026-07-22", 500000)
+	insertBalanceSnapshot(t, db, checking, "2026-07-22", 100000)
+
+	if err := ApplyMigrations(context.Background(), db); err != nil {
+		t.Fatalf("apply migration 000003: %v", err)
+	}
+	assertBalances := func(stage string) {
+		t.Helper()
+		for accountID, wantCents := range map[int64]int64{
+			card:     -5000,
+			loan:     500000,
+			checking: 100000,
+		} {
+			var got int64
+			if err := db.QueryRow(`
+				SELECT current_cents
+				FROM balance_snapshots
+				WHERE account_id = ? AND date = '2026-07-22'
+			`, accountID).Scan(&got); err != nil {
+				t.Fatalf("read balance after %s: %v", stage, err)
+			}
+			if got != wantCents {
+				t.Errorf("balance after %s = %d, want %d", stage, got, wantCents)
+			}
+		}
+	}
+	assertBalances("up migration")
+
+	downSQL, err := migrationFiles.ReadFile(
+		"migrations/000003_normalize_liability_balance_sign.down.sql",
+	)
+	if err != nil {
+		t.Fatalf("read migration 000003 down: %v", err)
+	}
+	if _, err := db.Exec(string(downSQL)); err != nil {
+		t.Fatalf("apply migration 000003 down: %v", err)
+	}
+	assertBalances("down migration")
 }
 
 func TestSchemaSupportsPendingToPostedReplacement(t *testing.T) {

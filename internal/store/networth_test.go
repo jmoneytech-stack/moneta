@@ -25,9 +25,8 @@ func seedNetworthStoreDB(t *testing.T) func(NetworthFilter) NetworthReport {
 	insertBalanceSnapshot(t, db, asset, "2026-07-16", 250000)
 	insertBalanceSnapshot(t, db, credit, "2026-07-15", 300000)
 	insertBalanceSnapshot(t, db, credit, "2026-07-22", 340000)
-	// Liability balances are normalized to positive debt magnitude even if a
-	// source stores the current balance with a negative sign.
-	insertBalanceSnapshot(t, db, loan, "2026-07-10", -100000)
+	// Liability balances use positive-when-owed canonical storage.
+	insertBalanceSnapshot(t, db, loan, "2026-07-10", 100000)
 
 	read := func(filter NetworthFilter) NetworthReport {
 		t.Helper()
@@ -103,6 +102,43 @@ func TestReadNetworthBeforeAllSnapshots(t *testing.T) {
 		if group.BalancedCount != 0 || group.BalanceCents != 0 {
 			t.Errorf("type group should have no money contribution: %+v", group)
 		}
+	}
+}
+
+func TestNetworthCreditBalanceCountsAsAsset(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID := insertEntity(t, db, "personal", "Personal")
+	checking := insertAccountFull(t, db, entityID, "Checking Example", "checking", "acct-1")
+	card := insertAccountFull(t, db, entityID, "Credit Example", "credit_card", "acct-2")
+	insertBalanceSnapshot(t, db, checking, "2026-07-22", 100000)
+	insertBalanceSnapshot(t, db, card, "2026-07-22", -5000)
+
+	report, err := ReadNetworth(ctx, db, NetworthFilter{})
+	if err != nil {
+		t.Fatalf("ReadNetworth() error: %v", err)
+	}
+	if report.AssetsCents != 100000 || report.LiabilitiesCents != -5000 ||
+		report.NetworthCents != 105000 {
+		t.Errorf("money totals = assets %d, liabilities %d, networth %d; want 100000, -5000, 105000",
+			report.AssetsCents, report.LiabilitiesCents, report.NetworthCents)
+	}
+}
+
+func TestNetworthLoanStillCountsAsDebt(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID := insertEntity(t, db, "personal", "Personal")
+	loan := insertAccountFull(t, db, entityID, "Loan Example", "loan", "acct-1")
+	insertBalanceSnapshot(t, db, loan, "2026-07-22", 5000)
+
+	report, err := ReadNetworth(ctx, db, NetworthFilter{})
+	if err != nil {
+		t.Fatalf("ReadNetworth() error: %v", err)
+	}
+	if report.LiabilitiesCents != 5000 || report.NetworthCents != -5000 {
+		t.Errorf("liabilities/networth = %d/%d, want 5000/-5000",
+			report.LiabilitiesCents, report.NetworthCents)
 	}
 }
 
