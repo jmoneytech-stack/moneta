@@ -86,34 +86,34 @@ func seedSpendCommandDB(t *testing.T, merchantCount int) string {
 	return databasePath
 }
 
-func TestResolveSpendPeriod(t *testing.T) {
+func TestResolveReadPeriod(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
 	tests := []struct {
 		name        string
 		periodValue string
 		from        string
 		to          string
-		want        spendPeriod
+		want        readPeriod
 		wantErr     bool
 	}{
-		{"default current local month", "", "", "", spendPeriod{"2026-07-01", "2026-07-31"}, false},
-		{"explicit leap month", "2024-02", "", "", spendPeriod{"2024-02-01", "2024-02-29"}, false},
-		{"custom inclusive dates", "", "2026-06-15", "2026-07-14", spendPeriod{"2026-06-15", "2026-07-14"}, false},
-		{"invalid month", "2026-13", "", "", spendPeriod{}, true},
-		{"month and dates conflict", "2026-07", "2026-07-01", "2026-07-31", spendPeriod{}, true},
-		{"from only", "", "2026-07-01", "", spendPeriod{}, true},
-		{"to only", "", "", "2026-07-31", spendPeriod{}, true},
-		{"invalid custom date", "", "2026-02-30", "2026-03-01", spendPeriod{}, true},
-		{"inverted custom dates", "", "2026-07-31", "2026-07-01", spendPeriod{}, true},
+		{"default current local month", "", "", "", readPeriod{"2026-07-01", "2026-07-31"}, false},
+		{"explicit leap month", "2024-02", "", "", readPeriod{"2024-02-01", "2024-02-29"}, false},
+		{"custom inclusive dates", "", "2026-06-15", "2026-07-14", readPeriod{"2026-06-15", "2026-07-14"}, false},
+		{"invalid month", "2026-13", "", "", readPeriod{}, true},
+		{"month and dates conflict", "2026-07", "2026-07-01", "2026-07-31", readPeriod{}, true},
+		{"from only", "", "2026-07-01", "", readPeriod{}, true},
+		{"to only", "", "", "2026-07-31", readPeriod{}, true},
+		{"invalid custom date", "", "2026-02-30", "2026-03-01", readPeriod{}, true},
+		{"inverted custom dates", "", "2026-07-31", "2026-07-01", readPeriod{}, true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := resolveSpendPeriod(test.periodValue, test.from, test.to, now)
+			got, err := resolveReadPeriod(test.periodValue, test.from, test.to, now)
 			if (err != nil) != test.wantErr {
-				t.Fatalf("resolveSpendPeriod() error = %v, wantErr %v", err, test.wantErr)
+				t.Fatalf("resolveReadPeriod() error = %v, wantErr %v", err, test.wantErr)
 			}
 			if got != test.want {
-				t.Errorf("resolveSpendPeriod() = %+v, want %+v", got, test.want)
+				t.Errorf("resolveReadPeriod() = %+v, want %+v", got, test.want)
 			}
 		})
 	}
