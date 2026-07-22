@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // TransactionFilter narrows 'moneta tx' reads. Zero values match
@@ -33,11 +34,16 @@ type TransactionRow struct {
 
 // TransactionSummary holds pre-computed aggregates over every transaction
 // matching a filter, independent of any row-limit applied to the listing.
+// Count covers all matching rows; the money aggregates follow the binding
+// analytics-exclusion rule and only cover rows with excluded = 0 (transfers
+// and card payments are excluded from spending analytics). ExcludedCount
+// reports how many matching rows the aggregates omitted.
 type TransactionSummary struct {
-	Count        int
-	TotalCents   int64 // signed sum; negative = net outflow
-	InflowCents  int64
-	OutflowCents int64 // negative or zero
+	Count         int
+	ExcludedCount int
+	TotalCents    int64 // signed sum over non-excluded rows; negative = net outflow
+	InflowCents   int64
+	OutflowCents  int64 // negative or zero
 }
 
 const transactionFilterWhere = `
@@ -77,6 +83,25 @@ func escapeLikeLiteral(value string) string {
 	return builder.String()
 }
 
+// validateTransactionFilter is store-side defense-in-depth: the CLI
+// validates dates for usage errors, but the store does not rely on its
+// callers for well-formed, ordered bounds.
+func validateTransactionFilter(filter TransactionFilter) error {
+	for _, bound := range []string{filter.From, filter.To} {
+		if bound == "" {
+			continue
+		}
+		parsed, err := time.Parse("2006-01-02", bound)
+		if err != nil || parsed.Format("2006-01-02") != bound {
+			return fmt.Errorf("transaction filter date %q must use valid YYYY-MM-DD form", bound)
+		}
+	}
+	if filter.From != "" && filter.To != "" && filter.From > filter.To {
+		return fmt.Errorf("transaction filter from %q is after to %q", filter.From, filter.To)
+	}
+	return nil
+}
+
 // SummarizeTransactions aggregates every transaction matching filter.
 func SummarizeTransactions(
 	ctx context.Context,
@@ -87,17 +112,27 @@ func SummarizeTransactions(
 	if db == nil {
 		return summary, fmt.Errorf("database is required")
 	}
+	if err := validateTransactionFilter(filter); err != nil {
+		return summary, err
+	}
 
+	// One round trip: count every match, count the excluded subset, and sum
+	// only the non-excluded rows. The exclusion lives in the SELECT, not the
+	// shared WHERE, so ListTransactions keeps showing all matching rows.
 	err := db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*),
-			COALESCE(SUM(transactions.amount_cents), 0),
-			COALESCE(SUM(CASE WHEN transactions.amount_cents > 0
+			COALESCE(SUM(CASE WHEN transactions.excluded = 1
+				THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN transactions.excluded = 0
 				THEN transactions.amount_cents ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN transactions.amount_cents < 0
+			COALESCE(SUM(CASE WHEN transactions.excluded = 0 AND transactions.amount_cents > 0
+				THEN transactions.amount_cents ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN transactions.excluded = 0 AND transactions.amount_cents < 0
 				THEN transactions.amount_cents ELSE 0 END), 0)
 	`+transactionFilterWhere, filterArgs(filter)...).Scan(
 		&summary.Count,
+		&summary.ExcludedCount,
 		&summary.TotalCents,
 		&summary.InflowCents,
 		&summary.OutflowCents,
@@ -110,7 +145,8 @@ func SummarizeTransactions(
 
 // ListTransactions loads up to limit transactions matching filter, newest
 // first (date then id descending). A limit <= 0 returns every match; the
-// caller is expected to pass --full in that case.
+// caller is expected to pass --full in that case. Callers own row-limit
+// validation; the store validates the filter itself.
 func ListTransactions(
 	ctx context.Context,
 	db *sql.DB,
@@ -119,6 +155,9 @@ func ListTransactions(
 ) ([]TransactionRow, error) {
 	if db == nil {
 		return nil, fmt.Errorf("database is required")
+	}
+	if err := validateTransactionFilter(filter); err != nil {
+		return nil, err
 	}
 
 	query := `

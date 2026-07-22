@@ -72,6 +72,53 @@ func SaveProviderItem(
 	return id, nil
 }
 
+// SetProviderItemStatus updates the stored health status of one provider
+// connection in its own short transaction (never inside a sync batch).
+// Valid statuses are the schema set: ok, login_required, error.
+func SetProviderItemStatus(
+	ctx context.Context,
+	db *sql.DB,
+	provider string,
+	itemID string,
+	status string,
+) error {
+	if db == nil {
+		return fmt.Errorf("database is required")
+	}
+	switch status {
+	case "ok", "login_required", "error":
+	default:
+		return fmt.Errorf("unsupported provider item status %q", status)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin provider item status update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE provider_items
+		SET status = ?,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		WHERE provider = ? AND item_id = ?
+	`, status, provider, itemID)
+	if err != nil {
+		return fmt.Errorf("update provider item status: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read provider item status result: %w", err)
+	}
+	if rowsAffected != 1 {
+		return fmt.Errorf("provider item %q is not linked", itemID)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit provider item status update: %w", err)
+	}
+	return nil
+}
+
 // ListProviderItems loads every stored connection for one provider, ordered by
 // item id, without decrypting or exposing credentials.
 func ListProviderItems(

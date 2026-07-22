@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jmoneytech-stack/moneta/internal/canon"
+	"github.com/jmoneytech-stack/moneta/internal/providers/plaid"
 	"github.com/jmoneytech-stack/moneta/internal/secret"
 	"github.com/jmoneytech-stack/moneta/internal/store"
 )
@@ -44,8 +45,8 @@ func TestRunLinkRequiresDatabasePathBeforeCredentials(t *testing.T) {
 	t.Setenv(databasePathEnvironment, "")
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), []string{"link"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("run() code = %d, want 1", code)
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2", code)
 	}
 	if !strings.Contains(stderr.String(), "MONETA_DB_PATH or --db is required") {
 		t.Errorf("run() error = %q", stderr.String())
@@ -56,11 +57,56 @@ func TestRunSyncRequiresDatabasePath(t *testing.T) {
 	t.Setenv(databasePathEnvironment, "")
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), []string{"sync"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("run() code = %d, want 1", code)
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2", code)
 	}
 	if !strings.Contains(stderr.String(), "MONETA_DB_PATH or --db is required") {
 		t.Errorf("run() error = %q", stderr.String())
+	}
+}
+
+// TestRunUsageErrorsExitTwoAcrossCommands pins the shared contract: unknown
+// flags and stray positional arguments are usage errors (exit 2) on every
+// command.
+func TestRunUsageErrorsExitTwoAcrossCommands(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"sync unknown flag", []string{"sync", "--bogus"}},
+		{"sync positional", []string{"sync", "extra"}},
+		{"link unknown flag", []string{"link", "--bogus"}},
+		{"link positional", []string{"link", "extra"}},
+		{"accounts unknown flag", []string{"accounts", "--bogus"}},
+		{"status unknown flag", []string{"status", "--bogus"}},
+		{"tx unknown flag", []string{"tx", "--bogus"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), test.args, &stdout, &stderr)
+			if code != 2 {
+				t.Errorf("run(%v) code = %d, want 2 (stderr %q)", test.args, code, stderr.String())
+			}
+		})
+	}
+}
+
+// TestRunSyncUnknownFlagPrintsErrorOnce guards against the old double-print:
+// the flag package writes the parse error, so run must not repeat it.
+func TestRunSyncUnknownFlagPrintsErrorOnce(t *testing.T) {
+	t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"sync", "--bogus"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2", code)
+	}
+	if count := strings.Count(stderr.String(), "flag provided but not defined"); count != 1 {
+		t.Errorf("parse error printed %d times, want 1:\n%s", count, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "error: flag provided") {
+		t.Errorf("run() re-printed the parse error with an error: prefix:\n%s", stderr.String())
 	}
 }
 
@@ -167,6 +213,120 @@ func TestSyncItemsReportsFailureWithoutAdvancingCursor(t *testing.T) {
 	}
 	if cursor != "" {
 		t.Errorf("sync cursor = %q, want unchanged empty cursor", cursor)
+	}
+}
+
+// TestSyncPersistsLoginRequiredOnReauthError pins the PR7 wire-up: a
+// reauth-class sync failure durably sets provider_items.status so
+// 'moneta status' exit 3 can fire.
+func TestSyncPersistsLoginRequiredOnReauthError(t *testing.T) {
+	db, cipher, item := newSyncTestDB(t)
+	provider := &fakeSyncProvider{
+		syncErr: &plaid.APIError{Code: "ITEM_LOGIN_REQUIRED"},
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := syncItems(
+		context.Background(),
+		db,
+		cipher,
+		[]store.ProviderItem{item},
+		func(store.ProviderItem, string) (canon.Provider, error) {
+			return provider, nil
+		},
+		&stdout,
+		&stderr,
+	)
+	if err == nil {
+		t.Fatal("syncItems() succeeded, want an error")
+	}
+	if !strings.Contains(stderr.String(), "needs reconnection") {
+		t.Errorf("syncItems() stderr = %q, want a reconnection message", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "access-fake") {
+		t.Errorf("syncItems() stderr leaked token material: %q", stderr.String())
+	}
+
+	var status string
+	if err := db.QueryRow(
+		"SELECT status FROM provider_items WHERE id = ?",
+		item.DatabaseID,
+	).Scan(&status); err != nil {
+		t.Fatalf("read provider item status: %v", err)
+	}
+	if status != "login_required" {
+		t.Errorf("provider item status = %q, want login_required", status)
+	}
+}
+
+// TestSyncLeavesStatusAloneOnNonReauthError guards against over-matching:
+// other API error codes must not flip the stored status.
+func TestSyncLeavesStatusAloneOnNonReauthError(t *testing.T) {
+	db, cipher, item := newSyncTestDB(t)
+	provider := &fakeSyncProvider{
+		syncErr: &plaid.APIError{Code: "RATE_LIMIT_EXCEEDED"},
+	}
+
+	var stdout, stderr bytes.Buffer
+	_ = syncItems(
+		context.Background(),
+		db,
+		cipher,
+		[]store.ProviderItem{item},
+		func(store.ProviderItem, string) (canon.Provider, error) {
+			return provider, nil
+		},
+		&stdout,
+		&stderr,
+	)
+
+	var status string
+	if err := db.QueryRow(
+		"SELECT status FROM provider_items WHERE id = ?",
+		item.DatabaseID,
+	).Scan(&status); err != nil {
+		t.Fatalf("read provider item status: %v", err)
+	}
+	if status != "ok" {
+		t.Errorf("provider item status = %q, want unchanged ok", status)
+	}
+}
+
+// TestSuccessfulSyncResetsStatusToOK pins the existing reset path: a
+// successful sync flips a stored login_required back to ok.
+func TestSuccessfulSyncResetsStatusToOK(t *testing.T) {
+	db, cipher, item := newSyncTestDB(t)
+	if err := store.SetProviderItemStatus(
+		context.Background(), db, plaidProviderName, item.ItemID, "login_required",
+	); err != nil {
+		t.Fatalf("set login_required: %v", err)
+	}
+
+	provider := &fakeSyncProvider{batch: &canon.SyncBatch{NextCursor: "cursor-1"}}
+	var stdout, stderr bytes.Buffer
+	if err := syncItems(
+		context.Background(),
+		db,
+		cipher,
+		[]store.ProviderItem{item},
+		func(store.ProviderItem, string) (canon.Provider, error) {
+			return provider, nil
+		},
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("syncItems() error: %v", err)
+	}
+
+	var status string
+	if err := db.QueryRow(
+		"SELECT status FROM provider_items WHERE id = ?",
+		item.DatabaseID,
+	).Scan(&status); err != nil {
+		t.Fatalf("read provider item status: %v", err)
+	}
+	if status != "ok" {
+		t.Errorf("provider item status = %q, want ok after successful sync", status)
 	}
 }
 

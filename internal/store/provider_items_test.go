@@ -195,3 +195,52 @@ func TestGetProviderItemValidatesInputAndReportsMissingItem(t *testing.T) {
 		})
 	}
 }
+
+func TestSetProviderItemStatus(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	if _, err := SaveProviderItem(ctx, db, ProviderItemSecret{
+		Provider:              "plaid",
+		ItemID:                "item-1",
+		Institution:           "Test Bank",
+		AccessTokenCiphertext: []byte("placeholder-ciphertext"),
+	}); err != nil {
+		t.Fatalf("save provider item: %v", err)
+	}
+
+	if err := SetProviderItemStatus(ctx, db, "plaid", "item-1", "login_required"); err != nil {
+		t.Fatalf("SetProviderItemStatus() error: %v", err)
+	}
+	var status string
+	if err := db.QueryRow(
+		"SELECT status FROM provider_items WHERE provider = 'plaid' AND item_id = 'item-1'",
+	).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "login_required" {
+		t.Errorf("status = %q, want login_required", status)
+	}
+
+	if err := SetProviderItemStatus(ctx, db, "plaid", "item-1", "ok"); err != nil {
+		t.Fatalf("SetProviderItemStatus(ok) error: %v", err)
+	}
+	if err := db.QueryRow(
+		"SELECT status FROM provider_items WHERE provider = 'plaid' AND item_id = 'item-1'",
+	).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "ok" {
+		t.Errorf("status = %q, want ok", status)
+	}
+
+	if err := SetProviderItemStatus(ctx, db, "plaid", "item-1", "bogus"); err == nil {
+		t.Error("SetProviderItemStatus(bogus) succeeded, want an error")
+	}
+	if err := SetProviderItemStatus(ctx, db, "plaid", "missing-item", "error"); err == nil {
+		t.Error("SetProviderItemStatus(missing item) succeeded, want an error")
+	}
+	if err := SetProviderItemStatus(ctx, nil, "plaid", "item-1", "ok"); err == nil {
+		t.Error("SetProviderItemStatus(nil db) succeeded, want an error")
+	}
+}

@@ -124,7 +124,12 @@ func encodeField(builder *strings.Builder, field Field, depth int) error {
 
 func encodeTable(builder *strings.Builder, indent, key string, table Table, depth int) error {
 	fields := make([]string, len(table.Fields))
+	seen := make(map[string]bool, len(table.Fields))
 	for i, name := range table.Fields {
+		if seen[name] {
+			return fmt.Errorf("duplicate table column %q", name)
+		}
+		seen[name] = true
 		fields[i] = encodeKey(name)
 	}
 	fmt.Fprintf(builder, "%s%s[%d]{%s}:",
@@ -240,9 +245,14 @@ func needsQuotes(value string) bool {
 	return strings.ContainsAny(value, ":\"\\[]{},\n\r\t") || hasControlRune(value)
 }
 
+// hasControlRune reports the control range plus the defensive additions
+// for the agent-facing threat model: U+007F, U+0085, U+2028, and U+2029 are
+// line separators to JS engines and some terminals, and untrusted merchant
+// names flow through here. Quoting them is spec-legal tightening, not a
+// spec requirement.
 func hasControlRune(value string) bool {
 	for _, r := range value {
-		if r < 0x20 {
+		if r < 0x20 || r == 0x7F || r == 0x85 || r == 0x2028 || r == 0x2029 {
 			return true
 		}
 	}

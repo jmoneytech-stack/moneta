@@ -178,7 +178,7 @@ func TestRunStatusUsageAndConfigErrors(t *testing.T) {
 			name:     "missing database path",
 			args:     []string{"status"},
 			dbPath:   "",
-			wantCode: 1,
+			wantCode: 2,
 			wantText: "MONETA_DB_PATH or --db is required",
 		},
 	}
@@ -194,6 +194,37 @@ func TestRunStatusUsageAndConfigErrors(t *testing.T) {
 				t.Errorf("run() stderr = %q, want %q", stderr.String(), test.wantText)
 			}
 		})
+	}
+}
+
+// TestStatusExitsThreeAfterReauthPersist pins the read side of PR7: a
+// stored login_required makes 'moneta status' exit 3.
+func TestStatusExitsThreeAfterReauthPersist(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "moneta.db")
+	t.Setenv(databasePathEnvironment, databasePath)
+	seedStatusItems(t, databasePath, []seedItem{
+		{itemID: "item-one", institution: "First Bank"},
+	})
+
+	ctx := context.Background()
+	db, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := store.SetProviderItemStatus(ctx, db, plaidProviderName, "item-one", "login_required"); err != nil {
+		t.Fatalf("SetProviderItemStatus() error: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"status"}, &stdout, &stderr)
+	if code != 3 {
+		t.Fatalf("run() code = %d, want 3 reconnection-needed (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "login_required") {
+		t.Errorf("status output missing login_required row:\n%s", stdout.String())
 	}
 }
 

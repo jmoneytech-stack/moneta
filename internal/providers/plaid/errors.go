@@ -45,6 +45,14 @@ func sanitizeSDKError(ctx context.Context, err error) error {
 	return ErrRequestFailed
 }
 
+// IsLoginRequired reports whether err carries the reauth-class Plaid error
+// code ITEM_LOGIN_REQUIRED - the same code Connections() maps to the
+// login_required state. The CLI and Connections() classify through this one
+// helper so they can never disagree.
+func IsLoginRequired(err error) bool {
+	return errorCode(err) == errorItemLoginRequired
+}
+
 func errorCode(err error) string {
 	var apiError *APIError
 	if errors.As(err, &apiError) {
@@ -59,7 +67,10 @@ func liabilitiesUnavailable(err error) bool {
 		"PRODUCTS_NOT_SUPPORTED",
 		"PRODUCT_NOT_ENABLED",
 		"ACCESS_NOT_GRANTED",
-		"ADDITIONAL_CONSENT_REQUIRED":
+		"ADDITIONAL_CONSENT_REQUIRED",
+		// Transient: the product's initial pull is still running shortly
+		// after link. Liabilities arrive on a later sync; no retry loop.
+		"PRODUCT_NOT_READY":
 		return true
 	default:
 		return false

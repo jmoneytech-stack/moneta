@@ -10,10 +10,10 @@ import (
 // 'moneta status'. It carries no credentials, amounts, or account names:
 // institution names, coarse counts, and timestamps only.
 //
-// Status comes from provider_items.status. Successful syncs reset it to
-// 'ok'; recording failed-run states such as 'login_required' is deferred
-// to the Phase 2 service layer (see docs/moneta-plan.md), so a stored
-// 'login_required' today can only come from an out-of-band write.
+// Status comes from provider_items.status. Successful syncs and re-links
+// reset it to 'ok'; a reauth-class sync failure (ITEM_LOGIN_REQUIRED) sets
+// 'login_required' via SetProviderItemStatus, which is what makes
+// 'moneta status' exit 3 fire.
 type ProviderItemStatus struct {
 	Provider     string
 	ItemID       string

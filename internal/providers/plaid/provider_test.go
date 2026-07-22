@@ -543,6 +543,10 @@ func TestProviderSyncTreatsUnavailableLiabilitiesAsOptional(t *testing.T) {
 		"PRODUCT_NOT_ENABLED",
 		"ACCESS_NOT_GRANTED",
 		"ADDITIONAL_CONSENT_REQUIRED",
+		// Plaid returns PRODUCT_NOT_READY while a product's initial pull is
+		// still running shortly after link; liabilities arrive on a later
+		// sync like the other optional-product cases.
+		"PRODUCT_NOT_READY",
 	} {
 		t.Run(code, func(t *testing.T) {
 			gateway := &fakeGateway{
@@ -953,6 +957,46 @@ func TestProviderSyncSkipsMalformedLiability(t *testing.T) {
 	if skipped.Kind != canon.RecordKindLiability || skipped.ID != "card-1" ||
 		skipped.Reason != canon.SkipMalformedRecord {
 		t.Errorf("skipped record = %#v, want card-1 liability malformed_record", skipped)
+	}
+}
+
+// TestProviderSyncDoesNotSkipCountARecoveredLiability pins the de-dup:
+// an account malformed in credit[] but valid in student[] merges one valid
+// liability and records no skip for that account.
+func TestProviderSyncDoesNotSkipCountARecoveredLiability(t *testing.T) {
+	minimum := 25.00
+	gateway := &fakeGateway{
+		syncPages: map[string]rawSyncPage{"": {NextCursor: "cursor-1"}},
+		accountsResult: []rawAccount{
+			{ID: "acct-1", Name: "Test Account", Type: "depository", Subtype: "checking", Currency: "USD"},
+		},
+		liabilitiesResult: rawLiabilities{
+			Credit: []rawCreditLiability{{
+				AccountID:          "acct-1",
+				MinimumPayment:     &minimum,
+				NextPaymentDueDate: "07/28/2026", // malformed: skipped in credit[]
+			}},
+			Student: []rawStudentLiability{{
+				AccountID:              "acct-1",
+				InterestRatePercentage: 5.25,
+				MinimumPayment:         &minimum,
+				NextPaymentDueDate:     "2026-07-28", // valid: merged from student[]
+			}},
+		},
+	}
+	provider := mustTestProvider(t, gateway)
+
+	batch, err := provider.Sync(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Sync() error: %v", err)
+	}
+	if len(batch.Liabilities) != 1 || batch.Liabilities[0].AccountRef != "acct-1" {
+		t.Fatalf("liabilities = %#v, want the one valid acct-1 liability", batch.Liabilities)
+	}
+	for _, skipped := range batch.Skipped {
+		if skipped.ID == "acct-1" {
+			t.Errorf("acct-1 was skip-counted despite merging a valid liability: %#v", skipped)
+		}
 	}
 }
 

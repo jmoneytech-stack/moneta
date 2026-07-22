@@ -234,7 +234,22 @@ func normalizeLiabilities(
 		}
 		canonicalLiabilities = append(canonicalLiabilities, liability)
 	}
-	return canonicalLiabilities, skipped
+
+	// An account malformed in one liability array (e.g. credit) but valid in
+	// another (e.g. student) merges one valid liability; drop its earlier
+	// skip so SyncResult.Skipped does not over-count it.
+	recovered := make(map[string]bool, len(canonicalLiabilities))
+	for _, liability := range canonicalLiabilities {
+		recovered[liability.AccountRef] = true
+	}
+	keptSkipped := skipped[:0]
+	for _, record := range skipped {
+		if recovered[record.ID] {
+			continue
+		}
+		keptSkipped = append(keptSkipped, record)
+	}
+	return canonicalLiabilities, keptSkipped
 }
 
 func canonicalAccountType(accountType, subtype string) (canon.AccountType, error) {

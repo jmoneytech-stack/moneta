@@ -80,6 +80,7 @@ func TestRunTxEmptyDatabase(t *testing.T) {
 	out := stdout.String()
 	for _, want := range []string{
 		"count: 0",
+		"excluded_count: 0",
 		"total: 0",
 		"tx[0]{date,amount,merchant,status,account}:",
 		"moneta link",
@@ -101,6 +102,7 @@ func TestRunTxSummaryAndRows(t *testing.T) {
 	out := stdout.String()
 	for _, want := range []string{
 		"count: 3",
+		"excluded_count: 0",
 		"total: 2497.99", // 250000 - 100 - 101 cents
 		"inflow: 2500",
 		"outflow: -2.01",
@@ -218,7 +220,7 @@ func TestRunTxUsageAndConfigErrors(t *testing.T) {
 			name:     "missing database path",
 			args:     []string{"tx"},
 			dbPath:   "",
-			wantCode: 1,
+			wantCode: 2,
 			wantText: "MONETA_DB_PATH or --db is required",
 		},
 	}
@@ -246,7 +248,7 @@ func TestRunTxJSONFormat(t *testing.T) {
 		t.Fatalf("run() code = %d, want 0 (stderr %q)", code, stderr.String())
 	}
 	out := strings.TrimSpace(stdout.String())
-	if !strings.HasPrefix(out, `{"summary":{"count":2`) {
+	if !strings.HasPrefix(out, `{"summary":{"count":2,"excluded_count":0`) {
 		t.Errorf("tx --json output = %q, want compact JSON with summary first", out)
 	}
 	if !strings.Contains(out, `"amount":-1`) && !strings.Contains(out, `"amount":2500`) {

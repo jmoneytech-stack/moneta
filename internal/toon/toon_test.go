@@ -213,6 +213,79 @@ func TestMarshalRejectsInvalidDocuments(t *testing.T) {
 	}
 }
 
+// TestNumberCannotInjectStructure pins the load-bearing safety property:
+// the anchored canonical-number regex rejects any payload carrying TOON
+// structure. This test must fail if the pattern is loosened (for example
+// with (?m) or an unanchored rewrite).
+func TestNumberCannotInjectStructure(t *testing.T) {
+	injections := []Number{
+		"5\ninjected: true",
+		"5\n",
+		"5 true",
+		"5,admin",
+		"5]\n",
+		"0x05",
+		"5e0", // exponent form is outside the canonical subset
+		"+5",  // leading plus is not canonical
+		" 5",  // whitespace is not canonical
+		"5 ",
+	}
+	for _, injection := range injections {
+		doc := Object{{Key: "n", Value: injection}}
+		if got, err := Marshal(doc); err == nil {
+			t.Errorf("Marshal(Number(%q)) = %q, want an error", string(injection), got)
+		}
+	}
+
+	// A plain canonical number still round-trips unquoted.
+	got, err := Marshal(Object{{Key: "n", Value: Number("5")}})
+	if err != nil {
+		t.Fatalf("Marshal(Number(5)) error: %v", err)
+	}
+	if got != "n: 5" {
+		t.Errorf("Marshal(Number(5)) = %q, want %q", got, "n: 5")
+	}
+}
+
+// TestTableRejectsDuplicateColumns mirrors the object duplicate-key guard:
+// a tabular header with repeated field names is an encoder error.
+func TestTableRejectsDuplicateColumns(t *testing.T) {
+	doc := Object{{Key: "t", Value: Table{
+		Fields: []string{"a", "a"},
+		Rows:   [][]any{{1, 2}},
+	}}}
+	if got, err := Marshal(doc); err == nil {
+		t.Errorf("Marshal() = %q, want a duplicate column error", got)
+	}
+}
+
+// TestLineSeparatorsAreQuoted pins the defensive tightening for values that
+// flow from untrusted provider data: JS line separators and friends are
+// never emitted raw, even though the spec does not require quoting them.
+func TestLineSeparatorsAreQuoted(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{"line separator", "a\u2028b"},
+		{"paragraph separator", "a\u2029b"},
+		{"next line", "a\u0085b"},
+		{"delete", "a\u007fb"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := Marshal(Object{{Key: "v", Value: test.value}})
+			if err != nil {
+				t.Fatalf("Marshal() error: %v", err)
+			}
+			want := "v: \"" + test.value + "\""
+			if got != want {
+				t.Errorf("Marshal() = %q, want quoted %q", got, want)
+			}
+		})
+	}
+}
+
 func TestEncodeAppendsSingleTrailingNewline(t *testing.T) {
 	var buffer bytes.Buffer
 	doc := Object{{Key: "a", Value: 1}}
