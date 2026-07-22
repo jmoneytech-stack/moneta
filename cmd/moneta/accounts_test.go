@@ -244,7 +244,7 @@ func TestRunAccountsUsageAndConfigErrors(t *testing.T) {
 			name:     "missing database path",
 			args:     []string{"accounts"},
 			dbPath:   "",
-			wantCode: 1,
+			wantCode: 2,
 			wantText: "MONETA_DB_PATH or --db is required",
 		},
 	}

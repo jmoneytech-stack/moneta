@@ -80,6 +80,64 @@ func TestSummarizeTransactionsAggregates(t *testing.T) {
 	}
 }
 
+// TestSummarizeTransactionsExcludesTransferAndExcludedRows pins DP2: the
+// aggregate ignores excluded rows (transfers), while the count and the row
+// listing still cover every match.
+func TestSummarizeTransactionsExcludesTransferAndExcludedRows(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID, err := EnsureDefaultEntity(ctx, db)
+	if err != nil {
+		t.Fatalf("EnsureDefaultEntity() error: %v", err)
+	}
+	accountID := insertAccountFull(t, db, entityID, "Everyday Checking", "checking", "acct-1")
+
+	insertExcluded := func(date string, amountCents int64, merchant, hash string, excluded int) {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO transactions (
+				account_id, entity_id, date, amount_cents,
+				merchant_raw, merchant_norm, status, excluded, dedup_hash
+			) VALUES (?, ?, ?, ?, ?, ?, 'posted', ?, ?)
+		`, accountID, entityID, date, amountCents, merchant, merchant, excluded, hash); err != nil {
+			t.Fatalf("insert transaction %q: %v", hash, err)
+		}
+	}
+	insertExcluded("2026-07-20", 500000, "Transfer In", "hash-tin", 1)
+	insertExcluded("2026-07-19", -500000, "Transfer Out", "hash-tout", 1)
+	insertExcluded("2026-07-18", -2000, "Grocery Mart", "hash-buy", 0)
+
+	filter := TransactionFilter{}
+	summary, err := SummarizeTransactions(ctx, db, filter)
+	if err != nil {
+		t.Fatalf("SummarizeTransactions() error: %v", err)
+	}
+	if summary.Count != 3 {
+		t.Errorf("Count = %d, want 3 (all matching rows)", summary.Count)
+	}
+	if summary.ExcludedCount != 2 {
+		t.Errorf("ExcludedCount = %d, want 2", summary.ExcludedCount)
+	}
+	if summary.TotalCents != -2000 {
+		t.Errorf("TotalCents = %d, want -2000 (transfers excluded)", summary.TotalCents)
+	}
+	if summary.InflowCents != 0 {
+		t.Errorf("InflowCents = %d, want 0 (transfer-in excluded)", summary.InflowCents)
+	}
+	if summary.OutflowCents != -2000 {
+		t.Errorf("OutflowCents = %d, want -2000 (transfer-out excluded)", summary.OutflowCents)
+	}
+
+	// The listing still shows every matching row.
+	transactions, err := ListTransactions(ctx, db, filter, 0)
+	if err != nil {
+		t.Fatalf("ListTransactions() error: %v", err)
+	}
+	if len(transactions) != 3 {
+		t.Errorf("ListTransactions() = %d rows, want all 3 including transfers", len(transactions))
+	}
+}
+
 func TestSummarizeTransactionsEmpty(t *testing.T) {
 	db := openTestDB(t)
 
@@ -209,6 +267,28 @@ func TestTransactionFiltersEscapeLikeMetacharacters(t *testing.T) {
 				t.Errorf("Count = %d, want %d", summary.Count, test.wantCount)
 			}
 		})
+	}
+}
+
+// TestTransactionReadsValidateFilter pins store-side defense-in-depth: the
+// store rejects malformed or inverted date bounds itself instead of relying
+// on the CLI caller to validate first.
+func TestTransactionReadsValidateFilter(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	filters := []TransactionFilter{
+		{From: "not-a-date"},
+		{To: "2026-02-30"},
+		{From: "2026-07-20", To: "2026-07-01"},
+	}
+	for _, filter := range filters {
+		if _, err := SummarizeTransactions(ctx, db, filter); err == nil {
+			t.Errorf("SummarizeTransactions(%+v) succeeded, want an error", filter)
+		}
+		if _, err := ListTransactions(ctx, db, filter, 0); err == nil {
+			t.Errorf("ListTransactions(%+v) succeeded, want an error", filter)
+		}
 	}
 }
 

@@ -18,7 +18,20 @@ var (
 	ErrCursorChanged = errors.New("provider item sync cursor changed")
 	// ErrProviderItemNotFound indicates that the target Item does not exist.
 	ErrProviderItemNotFound = errors.New("provider item not found")
+	// errAccountNotConnected marks the per-record case of a record
+	// referencing an account that is not connected to this provider item.
+	errAccountNotConnected = errors.New("account is not connected to this provider item")
 )
+
+// skipRecord signals that one record failed a validation invariant and must
+// be skipped and recorded, not treated as a batch-fatal error. Infrastructure
+// errors (DB failures, affected-rows mismatches, cursor conflicts) are
+// returned as ordinary errors and still roll back the whole batch.
+type skipRecord struct {
+	rec canon.SkippedRecord
+}
+
+func (e skipRecord) Error() string { return "skip: " + e.rec.Detail }
 
 // SyncTarget identifies the provider Item and default entity receiving a
 // batch. Existing account entity assignments are preserved.
@@ -46,10 +59,12 @@ type IngestResult struct {
 }
 
 // ApplySync writes a complete provider batch and advances its cursor in the
-// same transaction. Any validation or write failure rolls back the full batch.
-// Row-local poison that core can route around (a liability for an account type
-// with no terms table) is skipped and reported in the result instead of
-// rolling the batch back, so one bad record cannot wedge the Item cursor.
+// same transaction. A row that fails a per-record validation invariant (an
+// account with no name, a pending transaction carrying a pending id, a
+// record referencing an account this Item never connected, a liability for
+// an account type with no terms table) is skipped and reported in the
+// result, so one bad record cannot wedge the Item cursor. Any infrastructure
+// failure still rolls back the full batch.
 func (i *Ingestor) ApplySync(
 	ctx context.Context,
 	target SyncTarget,
@@ -80,26 +95,41 @@ func (i *Ingestor) ApplySync(
 	}
 	for index := range batch.Accounts {
 		if err := writer.upsertAccount(ctx, batch.Accounts[index]); err != nil {
+			if writer.recordSkip(err) {
+				continue
+			}
 			return nil, fmt.Errorf("apply account %d: %w", index, err)
 		}
 	}
 	for index := range batch.Added {
 		if err := writer.upsertTransaction(ctx, batch.Added[index]); err != nil {
+			if writer.recordSkip(err) {
+				continue
+			}
 			return nil, fmt.Errorf("apply added transaction %d: %w", index, err)
 		}
 	}
 	for index := range batch.Modified {
 		if err := writer.upsertTransaction(ctx, batch.Modified[index]); err != nil {
+			if writer.recordSkip(err) {
+				continue
+			}
 			return nil, fmt.Errorf("apply modified transaction %d: %w", index, err)
 		}
 	}
 	for index := range batch.Balances {
 		if err := writer.upsertBalance(ctx, batch.Balances[index]); err != nil {
+			if writer.recordSkip(err) {
+				continue
+			}
 			return nil, fmt.Errorf("apply balance %d: %w", index, err)
 		}
 	}
 	for index := range batch.Liabilities {
 		if err := writer.upsertLiability(ctx, batch.Liabilities[index]); err != nil {
+			if writer.recordSkip(err) {
+				continue
+			}
 			return nil, fmt.Errorf("apply liability %d: %w", index, err)
 		}
 	}
@@ -188,12 +218,29 @@ func newSyncWriter(ctx context.Context, tx *sql.Tx, target SyncTarget) (*syncWri
 	}, nil
 }
 
+// recordSkip reports whether err is a per-record validation skip and, if
+// so, records it. Any other error is left for the caller to treat as
+// batch-fatal.
+func (w *syncWriter) recordSkip(err error) bool {
+	var skip skipRecord
+	if errors.As(err, &skip) {
+		w.skipped = append(w.skipped, skip.rec)
+		return true
+	}
+	return false
+}
+
 func (w *syncWriter) upsertAccount(ctx context.Context, account canon.Account) error {
 	if account.ProviderAccountID == "" {
 		return fmt.Errorf("provider account id is required")
 	}
 	if account.Name == "" {
-		return fmt.Errorf("account name is required")
+		return skipRecord{rec: canon.SkippedRecord{
+			Kind:   canon.RecordKindAccount,
+			ID:     account.ProviderAccountID,
+			Reason: canon.SkipMalformedRecord,
+			Detail: "missing account name",
+		}}
 	}
 	if !validAccountType(account.Type) {
 		return fmt.Errorf("unsupported account type %q", account.Type)
@@ -265,13 +312,26 @@ func (w *syncWriter) upsertTransaction(ctx context.Context, transaction canon.Tr
 		return fmt.Errorf("pending transaction id requires a provider transaction id")
 	}
 	if transaction.PendingTxnID != "" && transaction.Status != canon.TxnStatusPosted {
-		return fmt.Errorf("pending transaction id is only valid on a posted transaction")
+		return skipRecord{rec: canon.SkippedRecord{
+			Kind:   canon.RecordKindTransaction,
+			ID:     transaction.ProviderTxnID,
+			Reason: canon.SkipMalformedRecord,
+			Detail: "pending row carries pending id",
+		}}
 	}
 	currency, err := canonicalCurrency(transaction.Currency)
 	if err != nil {
 		return err
 	}
 	account, err := w.account(ctx, transaction.AccountRef)
+	if errors.Is(err, errAccountNotConnected) {
+		return skipRecord{rec: canon.SkippedRecord{
+			Kind:   canon.RecordKindTransaction,
+			ID:     transaction.ProviderTxnID,
+			Reason: canon.SkipAccountSkipped,
+			Detail: transaction.AccountRef,
+		}}
+	}
 	if err != nil {
 		return err
 	}
@@ -577,6 +637,14 @@ func (w *syncWriter) upsertBalance(ctx context.Context, balance canon.Balance) e
 		return err
 	}
 	account, err := w.account(ctx, balance.AccountRef)
+	if errors.Is(err, errAccountNotConnected) {
+		return skipRecord{rec: canon.SkippedRecord{
+			Kind:   canon.RecordKindBalance,
+			ID:     balance.AccountRef,
+			Reason: canon.SkipAccountSkipped,
+			Detail: balance.AccountRef,
+		}}
+	}
 	if err != nil {
 		return err
 	}
@@ -615,6 +683,14 @@ func (w *syncWriter) upsertLiability(ctx context.Context, liability canon.Liabil
 		return fmt.Errorf("due day: %w", err)
 	}
 	account, err := w.account(ctx, liability.AccountRef)
+	if errors.Is(err, errAccountNotConnected) {
+		return skipRecord{rec: canon.SkippedRecord{
+			Kind:   canon.RecordKindLiability,
+			ID:     liability.AccountRef,
+			Reason: canon.SkipAccountSkipped,
+			Detail: liability.AccountRef,
+		}}
+	}
 	if err != nil {
 		return err
 	}
@@ -670,7 +746,21 @@ func (w *syncWriter) upsertLiability(ctx context.Context, liability canon.Liabil
 		}
 	default:
 		// A liability for an account type with no terms table is row-local
-		// poison: skip it so the batch and cursor can still advance.
+		// poison: skip it so the batch and cursor can still advance. The
+		// account may have carried terms under a previous type, so clear
+		// both tables just like the typed branches clear each other's.
+		if _, err := w.tx.ExecContext(ctx,
+			"DELETE FROM credit_terms WHERE account_id = ?",
+			account.id,
+		); err != nil {
+			return fmt.Errorf("remove obsolete credit terms: %w", err)
+		}
+		if _, err := w.tx.ExecContext(ctx,
+			"DELETE FROM loan_terms WHERE account_id = ?",
+			account.id,
+		); err != nil {
+			return fmt.Errorf("remove obsolete loan terms: %w", err)
+		}
 		w.skipped = append(w.skipped, canon.SkippedRecord{
 			Kind:   canon.RecordKindLiability,
 			ID:     liability.AccountRef,
@@ -711,7 +801,7 @@ func (w *syncWriter) loadAccount(ctx context.Context, providerAccountID string) 
 		&account.typeName,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return accountRecord{}, fmt.Errorf("account %q is not connected to this provider item", providerAccountID)
+		return accountRecord{}, fmt.Errorf("%w: %q", errAccountNotConnected, providerAccountID)
 	}
 	if err != nil {
 		return accountRecord{}, fmt.Errorf("load account %q: %w", providerAccountID, err)
@@ -772,12 +862,15 @@ func (w *syncWriter) finish(ctx context.Context, batch *canon.SyncBatch) error {
 		return ErrCursorChanged
 	}
 
+	// The skipped count is the durable audit trail for row-local poison:
+	// provider-side skips from the batch plus ingest-side skips recorded
+	// while applying it. Only the count is persisted, never record payloads.
 	if _, err := w.tx.ExecContext(ctx, `
 		INSERT INTO import_runs (
 			provider, provider_item_id, status, cursor_before, cursor_after,
 			accounts_seen, transactions_added, transactions_modified,
-			transactions_removed, completed_at
-		) VALUES (?, ?, 'succeeded', ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+			transactions_removed, skipped, completed_at
+		) VALUES (?, ?, 'succeeded', ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 	`,
 		w.provider,
 		w.providerItemID,
@@ -787,6 +880,7 @@ func (w *syncWriter) finish(ctx context.Context, batch *canon.SyncBatch) error {
 		len(batch.Added),
 		len(batch.Modified),
 		len(batch.Removed),
+		len(batch.Skipped)+len(w.skipped),
 	); err != nil {
 		return fmt.Errorf("record successful import run: %w", err)
 	}

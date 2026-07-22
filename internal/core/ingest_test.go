@@ -396,10 +396,14 @@ func TestApplySyncSkipsLiabilityForUnsupportedAccountType(t *testing.T) {
 	assertCursor(t, db, target.ProviderItemID, "cursor-1")
 }
 
-func TestApplySyncRollsBackDataAndCursorOnFailure(t *testing.T) {
+// TestApplySyncSkipsTransactionForAbsentAccountInsteadOfWedging reframes the
+// old rollback assertion: a transaction referencing an account that was never
+// connected is row-local poison, so the valid account is written, the
+// transaction is skipped, and the cursor advances.
+func TestApplySyncSkipsTransactionForAbsentAccountInsteadOfWedging(t *testing.T) {
 	db, ingestor, target := newTestIngestor(t, "plaid")
 
-	_, err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
+	result, err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
 		Accounts: []canon.Account{{
 			ProviderAccountID: "checking-1",
 			Name:              "Test Checking",
@@ -416,14 +420,315 @@ func TestApplySyncRollsBackDataAndCursorOnFailure(t *testing.T) {
 		}},
 		NextCursor: "cursor-1",
 	})
-	if err == nil {
-		t.Fatal("ApplySync() succeeded with an unknown transaction account")
+	if err != nil {
+		t.Fatalf("ApplySync() error: %v", err)
+	}
+	if result == nil || len(result.Skipped) != 1 {
+		t.Fatalf("ApplySync() skipped = %#v, want one record", result)
+	}
+	skipped := result.Skipped[0]
+	if skipped.Kind != canon.RecordKindTransaction || skipped.ID != "transaction-1" ||
+		skipped.Reason != canon.SkipAccountSkipped || skipped.Detail != "missing-account" {
+		t.Errorf("skipped record = %#v, want transaction-1 account_skipped/missing-account", skipped)
+	}
+
+	assertCount(t, db, "accounts", 1)
+	assertCount(t, db, "transactions", 0)
+	assertCount(t, db, "import_runs", 1)
+	assertCursor(t, db, target.ProviderItemID, "cursor-1")
+}
+
+func TestApplySyncSkipsEmptyNameAccountInsteadOfWedging(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+
+	result, err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "acct-noname",
+			Name:              "",
+			Type:              canon.AccountTypeChecking,
+			Currency:          "USD",
+		}},
+		NextCursor: "cursor-1",
+	})
+	if err != nil {
+		t.Fatalf("ApplySync() error: %v", err)
+	}
+	if result == nil || len(result.Skipped) != 1 {
+		t.Fatalf("ApplySync() skipped = %#v, want one record", result)
+	}
+	skipped := result.Skipped[0]
+	if skipped.Kind != canon.RecordKindAccount || skipped.ID != "acct-noname" ||
+		skipped.Reason != canon.SkipMalformedRecord || skipped.Detail != "missing account name" {
+		t.Errorf("skipped record = %#v, want acct-noname malformed_record/missing account name", skipped)
 	}
 
 	assertCount(t, db, "accounts", 0)
+	assertCount(t, db, "import_runs", 1)
+	assertCursor(t, db, target.ProviderItemID, "cursor-1")
+}
+
+// TestApplySyncCascadesSkippedAccountToBalanceAndLiability pins the ingest
+// last line of defense: when an account is skipped, every later record that
+// references it is also skipped instead of wedging the batch.
+func TestApplySyncCascadesSkippedAccountToBalanceAndLiability(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+
+	result, err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "acct-noname",
+			Name:              "",
+			Type:              canon.AccountTypeChecking,
+			Currency:          "USD",
+		}},
+		Balances: []canon.Balance{{
+			AccountRef:   "acct-noname",
+			Date:         "2026-07-01",
+			CurrentCents: 10000,
+		}},
+		Liabilities: []canon.Liability{{AccountRef: "acct-noname"}},
+		NextCursor:  "cursor-1",
+	})
+	if err != nil {
+		t.Fatalf("ApplySync() error: %v", err)
+	}
+	if result == nil || len(result.Skipped) != 3 {
+		t.Fatalf("ApplySync() skipped = %#v, want account, balance, and liability skips", result)
+	}
+
+	wantKinds := []canon.RecordKind{
+		canon.RecordKindAccount,
+		canon.RecordKindBalance,
+		canon.RecordKindLiability,
+	}
+	for i, wantKind := range wantKinds {
+		skipped := result.Skipped[i]
+		if skipped.Kind != wantKind || skipped.ID != "acct-noname" {
+			t.Errorf("skipped[%d] = %#v, want %s/acct-noname", i, skipped, wantKind)
+		}
+		if i == 0 {
+			if skipped.Reason != canon.SkipMalformedRecord || skipped.Detail != "missing account name" {
+				t.Errorf("account skip = %#v, want malformed_record/missing account name", skipped)
+			}
+			continue
+		}
+		if skipped.Reason != canon.SkipAccountSkipped || skipped.Detail != "acct-noname" {
+			t.Errorf("dependent skip = %#v, want account_skipped/acct-noname", skipped)
+		}
+	}
+
+	assertCount(t, db, "accounts", 0)
+	assertCount(t, db, "balance_snapshots", 0)
+	assertCount(t, db, "credit_terms", 0)
+	assertCount(t, db, "loan_terms", 0)
+	assertCount(t, db, "import_runs", 1)
+	var skippedCount int
+	if err := db.QueryRow(
+		"SELECT skipped FROM import_runs WHERE provider_item_id = ?",
+		target.ProviderItemID,
+	).Scan(&skippedCount); err != nil {
+		t.Fatalf("read import run skipped count: %v", err)
+	}
+	if skippedCount != 3 {
+		t.Errorf("import run skipped = %d, want 3", skippedCount)
+	}
+	assertCursor(t, db, target.ProviderItemID, "cursor-1")
+}
+
+func TestApplySyncSkipsPendingWithPendingIDInsteadOfWedging(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+
+	result, err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "checking-1",
+			Name:              "Test Checking",
+			Type:              canon.AccountTypeChecking,
+			Currency:          "USD",
+		}},
+		Added: []canon.Transaction{{
+			ProviderTxnID: "transaction-1",
+			PendingTxnID:  "pending-predecessor",
+			AccountRef:    "checking-1",
+			Date:          "2026-07-01",
+			AmountCents:   -100,
+			Status:        canon.TxnStatusPending,
+			Currency:      "USD",
+		}},
+		NextCursor: "cursor-1",
+	})
+	if err != nil {
+		t.Fatalf("ApplySync() error: %v", err)
+	}
+	if result == nil || len(result.Skipped) != 1 {
+		t.Fatalf("ApplySync() skipped = %#v, want one record", result)
+	}
+	skipped := result.Skipped[0]
+	if skipped.Kind != canon.RecordKindTransaction || skipped.ID != "transaction-1" ||
+		skipped.Reason != canon.SkipMalformedRecord || skipped.Detail != "pending row carries pending id" {
+		t.Errorf("skipped record = %#v, want transaction-1 malformed_record/pending row carries pending id", skipped)
+	}
+
+	assertCount(t, db, "accounts", 1)
 	assertCount(t, db, "transactions", 0)
-	assertCount(t, db, "import_runs", 0)
-	assertCursor(t, db, target.ProviderItemID, "")
+	assertCount(t, db, "import_runs", 1)
+	assertCursor(t, db, target.ProviderItemID, "cursor-1")
+}
+
+// TestApplySyncStillRollsBackOnInfrastructureError guards the preserved
+// atomicity: a non-validation failure (here an upsert affected-rows
+// mismatch from an account owned by another item) must roll back every
+// earlier write in the same batch and leave the cursor untouched.
+func TestApplySyncStillRollsBackOnInfrastructureError(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+	ctx := context.Background()
+
+	// Seed account shared-1 under the first provider item.
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "shared-1",
+			Name:              "Shared Checking",
+			Type:              canon.AccountTypeChecking,
+			Currency:          "USD",
+		}},
+		NextCursor: "cursor-1",
+	}); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	// A second provider item whose batch first writes a valid account, then
+	// hits an affected-rows mismatch on the account owned by the first item.
+	itemResult, err := db.Exec(`
+		INSERT INTO provider_items (
+			provider, item_id, institution, access_token_enc
+		) VALUES ('plaid', 'test-item-2', 'Other Bank', x'010203')
+	`)
+	if err != nil {
+		t.Fatalf("insert second provider item: %v", err)
+	}
+	secondItemID, err := itemResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("read second provider item id: %v", err)
+	}
+	second := SyncTarget{
+		ProviderItemID:  secondItemID,
+		DefaultEntityID: target.DefaultEntityID,
+		ExpectedCursor:  "",
+	}
+
+	_, err = ingestor.ApplySync(ctx, second, &canon.SyncBatch{
+		Accounts: []canon.Account{
+			{
+				ProviderAccountID: "new-1",
+				Name:              "New Account",
+				Type:              canon.AccountTypeSavings,
+				Currency:          "USD",
+			},
+			{
+				ProviderAccountID: "shared-1",
+				Name:              "Shared Checking",
+				Type:              canon.AccountTypeChecking,
+				Currency:          "USD",
+			},
+		},
+		NextCursor: "cursor-1",
+	})
+	if err == nil {
+		t.Fatal("ApplySync() succeeded, want an infrastructure error")
+	}
+
+	// The valid account written earlier in the same batch must be rolled back.
+	assertCount(t, db, "accounts", 1)
+	assertCount(t, db, "import_runs", 1)
+	assertCursor(t, db, secondItemID, "")
+}
+
+// TestApplySyncRecordsSkippedCountInImportRun pins the durable skip audit
+// trail: provider-side and ingest-side skips both land in the import run's
+// skipped count, committed atomically with the batch and cursor advance.
+func TestApplySyncRecordsSkippedCountInImportRun(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+
+	result, err := ingestor.ApplySync(context.Background(), target, &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "checking-1",
+			Name:              "Test Checking",
+			Type:              canon.AccountTypeChecking,
+			Currency:          "USD",
+		}},
+		Liabilities: []canon.Liability{{AccountRef: "checking-1"}},
+		Skipped: []canon.SkippedRecord{{
+			Kind:   canon.RecordKindTransaction,
+			ID:     "eur-txn",
+			Reason: canon.SkipUnsupportedCurrency,
+			Detail: "EUR",
+		}},
+		NextCursor: "cursor-1",
+	})
+	if err != nil {
+		t.Fatalf("ApplySync() error: %v", err)
+	}
+	if result == nil || len(result.Skipped) != 1 {
+		t.Fatalf("ApplySync() skipped = %#v, want the one ingest-side liability skip", result)
+	}
+
+	var skipped int
+	if err := db.QueryRow(
+		"SELECT skipped FROM import_runs WHERE provider_item_id = ?",
+		target.ProviderItemID,
+	).Scan(&skipped); err != nil {
+		t.Fatalf("read import run skipped count: %v", err)
+	}
+	if skipped != 2 {
+		t.Errorf("import run skipped = %d, want 2 (one provider-side + one ingest-side)", skipped)
+	}
+}
+
+// TestApplySyncClearsOrphanedTermsWhenLiabilityTypeChanges pins the skip
+// branch of upsertLiability: when an account changes to a type with no
+// terms table, the liability is skipped and any stale terms rows from its
+// previous type are deleted.
+func TestApplySyncClearsOrphanedTermsWhenLiabilityTypeChanges(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+	ctx := context.Background()
+
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "card-1",
+			Name:              "Test Card",
+			Type:              canon.AccountTypeCreditCard,
+			Currency:          "USD",
+		}},
+		Liabilities: []canon.Liability{{
+			AccountRef:      "card-1",
+			APR:             19.99,
+			MinPaymentCents: 2500,
+		}},
+		NextCursor: "cursor-1",
+	}); err != nil {
+		t.Fatalf("apply credit batch: %v", err)
+	}
+	assertCount(t, db, "credit_terms", 1)
+
+	target.ExpectedCursor = "cursor-1"
+	result, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "card-1",
+			Name:              "Test Card",
+			Type:              canon.AccountTypeChecking,
+			Currency:          "USD",
+		}},
+		Liabilities: []canon.Liability{{AccountRef: "card-1"}},
+		NextCursor:  "cursor-2",
+	})
+	if err != nil {
+		t.Fatalf("apply retyped batch: %v", err)
+	}
+	if result == nil || len(result.Skipped) != 1 {
+		t.Fatalf("ApplySync() skipped = %#v, want the one liability skip", result)
+	}
+
+	assertCount(t, db, "credit_terms", 0)
+	assertCount(t, db, "loan_terms", 0)
+	assertCursor(t, db, target.ProviderItemID, "cursor-2")
 }
 
 func TestApplySyncRejectsStaleCursorWithoutWrites(t *testing.T) {

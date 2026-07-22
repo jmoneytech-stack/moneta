@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 
@@ -100,6 +101,9 @@ func TestMoneyFormatsCanonicalDecimals(t *testing.T) {
 		{1050, "10.5"},
 		{-4218, "-42.18"},
 		{999999999, "9999999.99"},
+		// The negative-magnitude overflow boundary: must still produce the
+		// exact canonical decimal instead of wrapping.
+		{math.MinInt64, "-92233720368547758.08"},
 	}
 	for _, test := range tests {
 		got := Money(test.cents)

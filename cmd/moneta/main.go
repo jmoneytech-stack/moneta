@@ -42,27 +42,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "link":
-		if err := runLink(ctx, args[1:], stdout, stderr); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return 0
-			}
-			if !errors.Is(err, context.Canceled) {
-				fmt.Fprintf(stderr, "error: %v\n", err)
-			}
-			return 1
-		}
-		return 0
+		return runLink(ctx, args[1:], stdout, stderr)
 	case "sync":
-		if err := runSync(ctx, args[1:], stdout, stderr); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return 0
-			}
-			if !errors.Is(err, context.Canceled) {
-				fmt.Fprintf(stderr, "error: %v\n", err)
-			}
-			return 1
-		}
-		return 0
+		return runSync(ctx, args[1:], stdout, stderr)
 	case "status":
 		return runStatus(ctx, args[1:], stdout, stderr)
 	case "accounts":
@@ -79,7 +61,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runLink(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+// runLink shares the exit-code contract with the read commands: 0 ok, 1
+// runtime error, 2 usage. The flag package already prints parse errors, so
+// they return 2 without a second message. Ctrl+C (context.Canceled) exits 1
+// silently.
+func runLink(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("link", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	databasePath := flags.String(
@@ -93,32 +79,41 @@ func runLink(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		"loopback address for the temporary Plaid Link server",
 	)
 	if err := flags.Parse(args); err != nil {
-		return err
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("link does not accept positional arguments")
+		fmt.Fprintln(stderr, "error: link does not accept positional arguments")
+		return 2
 	}
 	if *databasePath == "" {
-		return fmt.Errorf("MONETA_DB_PATH or --db is required")
+		fmt.Fprintln(stderr, "error: MONETA_DB_PATH or --db is required")
+		return 2
 	}
 
 	config, err := plaid.ConfigFromEnvironment()
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
 	cipher, err := secret.FromEnvironment()
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
 	database, err := store.Open(ctx, *databasePath)
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
 	defer database.Close()
 
 	linker, err := plaid.NewLinker(config, database, cipher)
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
 	logger := log.New(stderr, "", log.LstdFlags)
 	server, err := plaid.NewLinkServer(linker, plaid.LinkServerConfig{
@@ -126,11 +121,13 @@ func runLink(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		Logger:        logger,
 	})
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
 	session, err := server.Start(ctx)
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
 	defer func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -141,13 +138,18 @@ func runLink(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fmt.Fprintf(stdout, "Open %s in your browser to connect an institution.\n", session.URL)
 	item, err := session.Wait(ctx)
 	if err != nil {
-		return err
+		if !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+		}
+		return 1
 	}
 	fmt.Fprintf(stdout, "Linked %s (%s).\n", item.Institution, item.ItemID)
-	return nil
+	return 0
 }
 
-func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+// runSync shares the exit-code contract with the read commands: 0 ok, 1
+// runtime error, 2 usage.
+func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sync", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	databasePath := flags.String(
@@ -161,26 +163,34 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		"sync only the Plaid item with this id (default: all linked items)",
 	)
 	if err := flags.Parse(args); err != nil {
-		return err
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("sync does not accept positional arguments")
+		fmt.Fprintln(stderr, "error: sync does not accept positional arguments")
+		return 2
 	}
 	if *databasePath == "" {
-		return fmt.Errorf("MONETA_DB_PATH or --db is required")
+		fmt.Fprintln(stderr, "error: MONETA_DB_PATH or --db is required")
+		return 2
 	}
 
 	config, err := plaid.ConfigFromEnvironment()
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
 	cipher, err := secret.FromEnvironment()
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
 	database, err := store.Open(ctx, *databasePath)
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
 	defer database.Close()
 
@@ -188,25 +198,34 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *itemID != "" {
 		item, err := store.GetProviderItem(ctx, database, plaidProviderName, *itemID)
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("provider item %q is not linked", *itemID)
+			fmt.Fprintf(stderr, "error: provider item %q is not linked\n", *itemID)
+			return 1
 		}
 		if err != nil {
-			return err
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
 		}
 		items = []store.ProviderItem{item}
 	} else {
 		items, err = store.ListProviderItems(ctx, database, plaidProviderName)
 		if err != nil {
-			return err
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
 		}
 	}
 
-	return syncItems(ctx, database, cipher, items, func(
+	if err := syncItems(ctx, database, cipher, items, func(
 		item store.ProviderItem,
 		accessToken string,
 	) (canon.Provider, error) {
 		return plaid.New(config, item.ItemID, item.Institution, accessToken)
-	}, stdout, stderr)
+	}, stdout, stderr); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+		}
+		return 1
+	}
+	return 0
 }
 
 // syncItems runs the library sync path for each item and prints a per-item
@@ -234,6 +253,30 @@ func syncItems(
 			return buildProvider(item, accessToken)
 		})
 		if err != nil {
+			// A reauth-class failure durably marks the Item so 'moneta
+			// status' can exit 3. This write runs after the failed sync
+			// returned, outside the rolled-back batch transaction. The
+			// message carries institution and item id only - never tokens
+			// or raw provider payloads.
+			if plaid.IsLoginRequired(err) {
+				if statusErr := store.SetProviderItemStatus(
+					ctx, db, plaidProviderName, item.ItemID, "login_required",
+				); statusErr != nil {
+					fmt.Fprintf(
+						stderr,
+						"error: persist login_required for item %s: %v\n",
+						item.ItemID,
+						statusErr,
+					)
+				} else {
+					fmt.Fprintf(
+						stderr,
+						"item %s (%s) needs reconnection; re-run moneta link\n",
+						item.ItemID,
+						item.Institution,
+					)
+				}
+			}
 			if errors.Is(err, core.ErrCursorChanged) {
 				fmt.Fprintf(
 					stderr,

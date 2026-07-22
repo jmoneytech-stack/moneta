@@ -53,7 +53,7 @@ func runAccounts(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	}
 	if *databasePath == "" {
 		fmt.Fprintln(stderr, "error: MONETA_DB_PATH or --db is required")
-		return 1
+		return 2
 	}
 
 	database, err := store.Open(ctx, *databasePath)

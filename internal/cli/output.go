@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 
 	"github.com/jmoneytech-stack/moneta/internal/toon"
@@ -29,6 +30,11 @@ const (
 func Money(cents int64) toon.Number {
 	if cents == 0 {
 		return "0"
+	}
+	// -cents overflows at the int64 boundary; render it explicitly so the
+	// output stays canonical (mirrors the ingest-side MinInt64 guard).
+	if cents == math.MinInt64 {
+		return "-92233720368547758.08"
 	}
 	sign := ""
 	magnitude := cents

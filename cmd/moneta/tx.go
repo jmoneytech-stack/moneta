@@ -73,7 +73,7 @@ func runTx(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if *databasePath == "" {
 		fmt.Fprintln(stderr, "error: MONETA_DB_PATH or --db is required")
-		return 1
+		return 2
 	}
 
 	database, err := store.Open(ctx, *databasePath)
@@ -128,9 +128,10 @@ func validateCLIDate(flagName string, value string) error {
 }
 
 // buildTxDoc shapes the transactions document: an aggregate summary over
-// every match (not just the shown window), one tx table, an optional
-// truncation line, and a next-step hint. Amounts are signed dollars at the
-// output boundary; negative = outflow.
+// every match (not just the shown window), with money totals restricted to
+// non-excluded rows per the analytics-exclusion rule, one tx table, an
+// optional truncation line, and a next-step hint. Amounts are signed
+// dollars at the output boundary; negative = outflow.
 func buildTxDoc(
 	summary store.TransactionSummary,
 	transactions []store.TransactionRow,
@@ -153,6 +154,7 @@ func buildTxDoc(
 	doc := toon.Object{
 		{Key: "summary", Value: toon.Object{
 			{Key: "count", Value: summary.Count},
+			{Key: "excluded_count", Value: summary.ExcludedCount},
 			{Key: "total", Value: cli.Money(summary.TotalCents)},
 			{Key: "inflow", Value: cli.Money(summary.InflowCents)},
 			{Key: "outflow", Value: cli.Money(summary.OutflowCents)},

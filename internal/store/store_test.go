@@ -27,8 +27,8 @@ func TestOpenAppliesInitialSchemaIdempotently(t *testing.T) {
 	if err := db.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 1 {
-		t.Fatalf("migration count = %d, want 1", migrationCount)
+	if migrationCount != 2 {
+		t.Fatalf("migration count = %d, want 2", migrationCount)
 	}
 
 	for _, table := range []string{
@@ -152,6 +152,54 @@ func TestInitialDownMigrationRemovesSchema(t *testing.T) {
 	}
 	if exists {
 		t.Fatal("entities table still exists after down migration")
+	}
+}
+
+func TestImportRunsSkippedMigration(t *testing.T) {
+	db := openTestDB(t)
+
+	var declaredType string
+	if err := db.QueryRow(`
+		SELECT type FROM pragma_table_info('import_runs') WHERE name = 'skipped'
+	`).Scan(&declaredType); err != nil {
+		t.Fatalf("read import_runs.skipped type: %v", err)
+	}
+	if declaredType != "INTEGER" {
+		t.Errorf("import_runs.skipped type = %q, want INTEGER", declaredType)
+	}
+
+	// Existing rows and fresh inserts default to zero skipped.
+	if _, err := db.Exec(`
+		INSERT INTO import_runs (provider, status, completed_at)
+		VALUES ('plaid', 'succeeded', '2026-07-20T00:00:00.000Z')
+	`); err != nil {
+		t.Fatalf("insert import run: %v", err)
+	}
+	var skipped int
+	if err := db.QueryRow("SELECT skipped FROM import_runs").Scan(&skipped); err != nil {
+		t.Fatalf("read skipped default: %v", err)
+	}
+	if skipped != 0 {
+		t.Errorf("skipped default = %d, want 0", skipped)
+	}
+
+	downSQL, err := migrationFiles.ReadFile("migrations/000002_import_runs_skipped.down.sql")
+	if err != nil {
+		t.Fatalf("read down migration: %v", err)
+	}
+	if _, err := db.Exec(string(downSQL)); err != nil {
+		t.Fatalf("apply down migration: %v", err)
+	}
+	var exists bool
+	if err := db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM pragma_table_info('import_runs') WHERE name = 'skipped'
+		)
+	`).Scan(&exists); err != nil {
+		t.Fatalf("check skipped column removal: %v", err)
+	}
+	if exists {
+		t.Fatal("import_runs.skipped still exists after down migration")
 	}
 }
 
