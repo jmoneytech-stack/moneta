@@ -6,17 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math/big"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jmoneytech-stack/moneta/internal/cli"
 	"github.com/jmoneytech-stack/moneta/internal/store"
 	"github.com/jmoneytech-stack/moneta/internal/toon"
 )
-
-const savingsRateDecimalPlaces = 4
 
 // runCashflow prints posted, non-excluded inflow, outflow, net, and savings
 // rate for one period. It is read-only against the local database. Exit
@@ -110,38 +106,10 @@ func buildCashflowDoc(summary store.CashflowSummary, filter store.CashflowFilter
 	}
 }
 
-// savingsRateNumber returns net/inflow as a decimal fraction truncated toward
-// zero to four decimal places (one basis point). For example 0.1234 means
-// 12.34%. Big integers avoid overflow and all float precision concerns. A
-// zero inflow returns nil so the output boundary emits null.
+// savingsRateNumber keeps the cashflow test and builder contract while
+// delegating all scaled-decimal formatting to the shared CLI helper.
 func savingsRateNumber(netCents, inflowCents int64) *toon.Number {
-	if inflowCents <= 0 {
-		return nil
-	}
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(savingsRateDecimalPlaces), nil)
-	numerator := new(big.Int).Mul(big.NewInt(netCents), scale)
-	scaled := new(big.Int).Quo(numerator, big.NewInt(inflowCents))
-	value := toon.Number(formatScaledInteger(scaled, savingsRateDecimalPlaces))
-	return &value
-}
-
-func formatScaledInteger(value *big.Int, decimalPlaces int) string {
-	negative := value.Sign() < 0
-	magnitude := new(big.Int).Abs(new(big.Int).Set(value)).String()
-	if len(magnitude) <= decimalPlaces {
-		magnitude = strings.Repeat("0", decimalPlaces-len(magnitude)+1) + magnitude
-	}
-	split := len(magnitude) - decimalPlaces
-	whole := magnitude[:split]
-	fraction := strings.TrimRight(magnitude[split:], "0")
-	formatted := whole
-	if fraction != "" {
-		formatted += "." + fraction
-	}
-	if negative && formatted != "0" {
-		formatted = "-" + formatted
-	}
-	return formatted
+	return cli.Ratio(netCents, inflowCents, 4)
 }
 
 func cashflowHint(summary store.CashflowSummary, filter store.CashflowFilter) string {

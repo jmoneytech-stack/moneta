@@ -59,13 +59,14 @@ func NewHandler(db *sql.DB, apiKey string, logger *log.Logger) (http.Handler, er
 	for _, route := range routes {
 		mux.Handle("GET "+route.path, route.handler)
 		mux.HandleFunc(route.path, func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Allow", "GET, HEAD")
 			writeError(writer, http.StatusMethodNotAllowed, "method not allowed")
 		})
 	}
 	mux.HandleFunc("/", func(writer http.ResponseWriter, _ *http.Request) {
 		writeError(writer, http.StatusNotFound, "not found")
 	})
-	return s.authenticate(mux), nil
+	return s.authenticate(s.recoverPanics(mux)), nil
 }
 
 func (s *server) authenticate(next http.Handler) http.Handler {
@@ -77,6 +78,18 @@ func (s *server) authenticate(next http.Handler) http.Handler {
 			writeError(writer, http.StatusUnauthorized, "unauthorized")
 			return
 		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func (s *server) recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				s.logger.Printf("REST handler panic: %v", recovered)
+				writeError(writer, http.StatusInternalServerError, "internal server error")
+			}
+		}()
 		next.ServeHTTP(writer, request)
 	})
 }
@@ -120,6 +133,7 @@ func Serve(ctx context.Context, listener net.Listener, handler http.Handler) err
 	httpServer := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 	errCh := make(chan error, 1)

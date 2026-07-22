@@ -111,6 +111,7 @@ func ReadSpend(
 		filter,
 		limit,
 		"LEFT JOIN categories ON categories.id = transactions.category_id",
+		"categories.id",
 		categoryLabel,
 	)
 	if err != nil {
@@ -129,6 +130,7 @@ func ReadSpend(
 		limit,
 		"",
 		merchantLabel,
+		merchantLabel,
 	)
 	if err != nil {
 		return report, fmt.Errorf("list spend by merchant: %w", err)
@@ -141,13 +143,16 @@ func ReadSpend(
 }
 
 // listSpendGroups accepts SQL fragments from package-owned constants only;
-// user input remains parameterized through spendFilterArgs.
+// user input remains parameterized through spendFilterArgs. groupKey controls
+// identity independently from the display label, so same-named categories
+// remain distinct while merchant labels keep their existing grouping.
 func listSpendGroups(
 	ctx context.Context,
 	tx *sql.Tx,
 	filter SpendFilter,
 	limit int,
 	join string,
+	groupKey string,
 	label string,
 ) ([]SpendGroup, int, error) {
 	base := spendFilterWhere
@@ -165,9 +170,9 @@ func listSpendGroups(
 	var total int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM (
-			SELECT `+label+` AS group_name
+			SELECT `+groupKey+` AS group_key, `+label+` AS group_name
 		`+base+`
-			GROUP BY group_name
+			GROUP BY group_key, group_name
 		)
 	`, spendFilterArgs(filter)...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count groups: %w", err)
@@ -179,8 +184,8 @@ func listSpendGroups(
 			COUNT(*),
 			COALESCE(SUM(-transactions.amount_cents), 0) AS spend_cents
 	` + base + `
-		GROUP BY group_name
-		ORDER BY spend_cents DESC, group_name
+		GROUP BY ` + groupKey + `, group_name
+		ORDER BY spend_cents DESC, group_name, ` + groupKey + `
 	`
 	args := spendFilterArgs(filter)
 	if limit > 0 {
