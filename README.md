@@ -13,7 +13,7 @@ The Link flow creates and exchanges Plaid tokens, encrypts permanent access toke
 The complete Link, transactions, balances, liabilities, encrypted persistence, and atomic ingestion path has been verified against Plaid Sandbox.
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
-`moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, and `moneta cashflow` are the first AXI reads, emitting TOON for agent consumers; the remaining AXI reads and the REST API are next.
+`moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, and `moneta networth` are the first AXI reads, emitting TOON for agent consumers; the remaining AXI reads and the REST API are next.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -140,6 +140,21 @@ It includes posted rows with `excluded = 0`; refunds and other positive rows cou
 The summary reports count, inflow, outflow, signed net (`inflow - outflow`), and `savings_rate`.
 Savings rate is `net / inflow`, truncated toward zero to four decimal places (`0.1234` means 12.34%); it is `null` when inflow is zero.
 Money remains integer cents internally and renders through `cli.Money`; rate construction uses integer arithmetic, never float64.
+Exit codes: 0 ok, 1 error, 2 usage.
+
+## Net worth
+
+```sh
+go run ./cmd/moneta networth [--as-of 2026-07-22] [--json]
+```
+
+By default, net worth uses each account's latest available balance and reports the newest selected balance date as `as_of`; it is `null` when no balance snapshots exist.
+`--as-of` selects each account's latest balance on or before the inclusive YYYY-MM-DD cutoff and echoes that requested date in the summary.
+Checking, savings, investment, and asset accounts contribute to assets.
+Credit-card and loan balances contribute to liabilities as positive debt magnitude, and signed net worth is `assets - liabilities`.
+Accounts without an eligible snapshot are counted in `missing_balance` and omitted from every money total; a by-type row with no eligible balances renders `balance: null` rather than inventing zero.
+All stored accounts participate, including inactive accounts, because the current schema does not track historical active intervals.
+Money remains integer cents internally and renders through `cli.Money`.
 Exit codes: 0 ok, 1 error, 2 usage.
 
 ## Library sync path
