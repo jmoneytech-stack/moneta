@@ -17,6 +17,7 @@ import (
 const (
 	apiKeyEnvironment    = "MONETA_API_KEY"
 	defaultListenAddress = "127.0.0.1:8080"
+	apiKeyFlagWarning    = "WARNING: --api-key is visible to other local users via the process list; prefer MONETA_API_KEY"
 )
 
 // runServe starts the authenticated read-only REST mirror and runs until its
@@ -38,7 +39,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	apiKeyFlag := flags.String(
 		"api-key",
 		"",
-		"REST API key (default MONETA_API_KEY)",
+		"REST API key (visible in the process list; prefer MONETA_API_KEY)",
 	)
 	allowNonLoopback := flags.Bool(
 		"allow-non-loopback",
@@ -59,9 +60,10 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, "error: MONETA_DB_PATH or --db is required")
 		return 2
 	}
-	apiKey := *apiKeyFlag
-	if apiKey == "" {
-		apiKey = os.Getenv(apiKeyEnvironment)
+	apiKey := os.Getenv(apiKeyEnvironment)
+	if *apiKeyFlag != "" {
+		apiKey = *apiKeyFlag
+		fmt.Fprintln(stderr, apiKeyFlagWarning)
 	}
 	if apiKey == "" {
 		fmt.Fprintln(stderr, "error: MONETA_API_KEY or --api-key is required")

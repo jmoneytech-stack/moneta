@@ -85,6 +85,77 @@ func TestReadSpendFiltersAnalyticsRowsAndGroups(t *testing.T) {
 	}
 }
 
+func TestReadSpendKeepsSameNamedCategoriesSeparate(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID, err := EnsureDefaultEntity(ctx, db)
+	if err != nil {
+		t.Fatalf("EnsureDefaultEntity() error: %v", err)
+	}
+	accountID := insertAccountFull(t, db, entityID, "Everyday Checking", "checking", "acct-1")
+
+	rootResult, err := db.Exec(`
+		INSERT INTO categories (name, kind) VALUES ('Coffee', 'expense')
+	`)
+	if err != nil {
+		t.Fatalf("insert root category: %v", err)
+	}
+	rootID, err := rootResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("root category id: %v", err)
+	}
+	parentResult, err := db.Exec(`
+		INSERT INTO categories (name, kind) VALUES ('Food Parent', 'expense')
+	`)
+	if err != nil {
+		t.Fatalf("insert parent category: %v", err)
+	}
+	parentID, err := parentResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("parent category id: %v", err)
+	}
+	childResult, err := db.Exec(`
+		INSERT INTO categories (name, parent_id, kind) VALUES ('Coffee', ?, 'expense')
+	`, parentID)
+	if err != nil {
+		t.Fatalf("insert child category: %v", err)
+	}
+	childID, err := childResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("child category id: %v", err)
+	}
+
+	insertSpendTransaction(t, db, accountID, entityID,
+		"2026-07-10", -200, "Root Cafe", rootID, "posted", 0, "root-coffee")
+	insertSpendTransaction(t, db, accountID, entityID,
+		"2026-07-11", -100, "Child Cafe One", childID, "posted", 0, "child-coffee-1")
+	insertSpendTransaction(t, db, accountID, entityID,
+		"2026-07-12", -100, "Child Cafe Two", childID, "posted", 0, "child-coffee-2")
+
+	report, err := ReadSpend(ctx, db, SpendFilter{
+		From: "2026-07-01", To: "2026-07-31",
+	}, 20)
+	if err != nil {
+		t.Fatalf("ReadSpend() error: %v", err)
+	}
+	if report.Summary.Count != 3 || report.Summary.SpendCents != 400 {
+		t.Errorf("summary = %+v, want count 3 / spend 400", report.Summary)
+	}
+	if report.CategoryTotal != 2 || len(report.Categories) != 2 {
+		t.Fatalf("categories = %d/%d, want 2/2: %+v",
+			len(report.Categories), report.CategoryTotal, report.Categories)
+	}
+	want := []SpendGroup{
+		{Name: "Coffee", Count: 1, SpendCents: 200},
+		{Name: "Coffee", Count: 2, SpendCents: 200},
+	}
+	for i := range want {
+		if report.Categories[i] != want[i] {
+			t.Errorf("categories[%d] = %+v, want %+v", i, report.Categories[i], want[i])
+		}
+	}
+}
+
 func TestReadSpendAccountFilterIsLiteral(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

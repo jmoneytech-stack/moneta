@@ -45,6 +45,29 @@ func TestRunServeUsageAndConfigurationErrors(t *testing.T) {
 	}
 }
 
+func TestRunServeWarnsWhenAPIKeyComesFromFlag(t *testing.T) {
+	flagKey := "fake-flag-key"
+	environmentKey := "fake-environment-key"
+	t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
+	t.Setenv(apiKeyEnvironment, environmentKey)
+
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{
+		"serve",
+		"--api-key", flagKey,
+		"--listen", "127.0.0.1",
+	}, io.Discard, &stderr)
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2 (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), apiKeyFlagWarning) {
+		t.Errorf("stderr = %q, want warning %q", stderr.String(), apiKeyFlagWarning)
+	}
+	if strings.Contains(stderr.String(), flagKey) || strings.Contains(stderr.String(), environmentKey) {
+		t.Error("serve warning output leaked an API key")
+	}
+}
+
 func TestRunServeStopsCleanlyOnCanceledContext(t *testing.T) {
 	apiKey := "fake-clean-stop-key"
 	t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
@@ -81,6 +104,9 @@ func TestRunServeStopsCleanlyOnCanceledContext(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "authentication enabled") {
 		t.Errorf("startup log = %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), apiKeyFlagWarning) {
+		t.Errorf("environment API key should not produce flag warning: %q", stderr.String())
 	}
 	if strings.Contains(stderr.String(), apiKey) {
 		t.Error("startup log leaked API key")

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"log"
 	"net/http"
@@ -215,16 +216,52 @@ func TestAPIReadRoutes(t *testing.T) {
 	}
 }
 
+func TestAPIRecoversPanicsAndContinuesServing(t *testing.T) {
+	var logs bytes.Buffer
+	s := &server{
+		apiKeyHash: sha256.Sum256([]byte(testAPIKey)),
+		logger:     log.New(&logs, "", 0),
+	}
+	calls := 0
+	handler := s.authenticate(s.recoverPanics(http.HandlerFunc(
+		func(writer http.ResponseWriter, _ *http.Request) {
+			calls++
+			if calls == 1 {
+				panic("fake handler panic")
+			}
+			writer.WriteHeader(http.StatusNoContent)
+		},
+	)))
+
+	first := performRequest(handler, "/v1/test", testAPIKey)
+	if first.Code != http.StatusInternalServerError ||
+		first.Body.String() != "{\"error\":\"internal server error\"}\n" {
+		t.Errorf("panic response = %d %q", first.Code, first.Body.String())
+	}
+	if !strings.Contains(logs.String(), "REST handler panic: fake handler panic") {
+		t.Errorf("panic log = %q", logs.String())
+	}
+	if strings.Contains(logs.String(), testAPIKey) {
+		t.Error("panic log leaked API key")
+	}
+
+	second := performRequest(handler, "/v1/test", testAPIKey)
+	if second.Code != http.StatusNoContent {
+		t.Errorf("request after panic = %d, want 204", second.Code)
+	}
+}
+
 func TestAPIReturnsJSONForUnknownPathsAndMethods(t *testing.T) {
 	handler := newTestHandler(t, openAPITestDB(t), nil)
 	tests := []struct {
-		method string
-		path   string
-		code   int
-		body   string
+		method    string
+		path      string
+		code      int
+		body      string
+		wantAllow string
 	}{
-		{http.MethodGet, "/v1/unknown", http.StatusNotFound, "{\"error\":\"not found\"}\n"},
-		{http.MethodPost, "/v1/status", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n"},
+		{http.MethodGet, "/v1/unknown", http.StatusNotFound, "{\"error\":\"not found\"}\n", ""},
+		{http.MethodPost, "/v1/status", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
 	}
 	for _, test := range tests {
 		request := httptest.NewRequest(test.method, test.path, nil)
@@ -237,6 +274,10 @@ func TestAPIReturnsJSONForUnknownPathsAndMethods(t *testing.T) {
 		}
 		if response.Header().Get("Content-Type") != "application/json" {
 			t.Errorf("%s %s Content-Type = %q", test.method, test.path, response.Header().Get("Content-Type"))
+		}
+		if response.Header().Get("Allow") != test.wantAllow {
+			t.Errorf("%s %s Allow = %q, want %q",
+				test.method, test.path, response.Header().Get("Allow"), test.wantAllow)
 		}
 	}
 }

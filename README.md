@@ -186,7 +186,7 @@ go run ./cmd/moneta serve
 
 The default listen address is `127.0.0.1:8080`.
 Every route requires `X-API-Key`, and the key is compared in constant time after fixed-length hashing.
-The key is never logged; prefer `MONETA_API_KEY` because passing `--api-key` can expose it in the process argument list.
+The key is never logged; `MONETA_API_KEY` is the recommended mechanism because `--api-key` is visible to other local users through the process list.
 Responses are JSON only, set `Cache-Control: no-store`, and render money as exact decimal numbers through the same `cli.Money` boundary as CLI JSON.
 
 ```sh
