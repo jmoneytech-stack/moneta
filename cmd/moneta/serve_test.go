@@ -1,0 +1,66 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestRunServeUsageAndConfigurationErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		dbPath   string
+		apiKey   string
+		wantText string
+	}{
+		{"positional", []string{"serve", "extra"}, filepath.Join(t.TempDir(), "db"), "fake-key", "does not accept positional"},
+		{"unknown flag", []string{"serve", "--bogus"}, filepath.Join(t.TempDir(), "db"), "fake-key", "flag provided but not defined"},
+		{"missing database", []string{"serve"}, "", "fake-key", "MONETA_DB_PATH or --db is required"},
+		{"missing API key", []string{"serve"}, filepath.Join(t.TempDir(), "db"), "", "MONETA_API_KEY or --api-key is required"},
+		{"malformed listen", []string{"serve", "--listen", "127.0.0.1"}, filepath.Join(t.TempDir(), "db"), "fake-key", "host:port"},
+		{"non-loopback refused", []string{"serve", "--listen", "0.0.0.0:8080"}, filepath.Join(t.TempDir(), "db"), "fake-key", "requires --allow-non-loopback"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(databasePathEnvironment, test.dbPath)
+			t.Setenv(apiKeyEnvironment, test.apiKey)
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), test.args, &stdout, &stderr)
+			if code != 2 {
+				t.Errorf("run() code = %d, want 2", code)
+			}
+			if !strings.Contains(stderr.String(), test.wantText) {
+				t.Errorf("stderr = %q, want %q", stderr.String(), test.wantText)
+			}
+			if test.apiKey != "" && strings.Contains(stderr.String(), test.apiKey) {
+				t.Error("serve error output leaked API key")
+			}
+		})
+	}
+}
+
+func TestRunServeStopsCleanlyOnCanceledContext(t *testing.T) {
+	apiKey := "fake-clean-stop-key"
+	t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
+	t.Setenv(apiKeyEnvironment, apiKey)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	var stdout, stderr bytes.Buffer
+	code := run(ctx, []string{"serve", "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "REST listening on 127.0.0.1:") ||
+		!strings.Contains(stderr.String(), "authentication enabled") {
+		t.Errorf("startup log = %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), apiKey) {
+		t.Error("startup log leaked API key")
+	}
+}
