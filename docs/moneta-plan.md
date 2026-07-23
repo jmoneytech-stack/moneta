@@ -120,13 +120,14 @@ type Transaction struct {
 type Balance struct {
     AccountRef string
     Date       Date
-    CurrentCents, AvailableCents, LimitCents int64
+    CurrentCents int64
+    AvailableCents, LimitCents *int64
 }
 
 type Liability struct {
     AccountRef string
     APR        float64
-    LimitCents, MinPaymentCents, LastStatementCents int64
+    LimitCents, MinPaymentCents, LastStatementCents *int64
     StatementDay, DueDay int
 }
 
@@ -267,6 +268,7 @@ These three requirements are binding for Phase 1 and beyond; code that violates 
 ### 1. Money: integer cents, never floats
 
 - All monetary amounts are `int64` cents in SQLite and in every internal Go struct; no `float64` money anywhere in the core.
+- Optional money is nullable (`*int64` / SQL `NULL`), never sentinel-zero; a non-nil pointer to zero represents a real reported zero.
 - Liability current balances use one canonical sign at and beyond the provider boundary: positive means owed and negative means the institution owes the user.
 - Every string money input (CLI flags, REST API, manual/JSON provider) parses to cents without ever passing through a float: split on the decimal point with digit validation.
   `$10.50`, `10.50`, `10.5`, and `-3.07` all parse correctly; currency symbols and negatives are handled; more than 2 decimal places is rejected.

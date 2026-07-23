@@ -114,15 +114,15 @@ func normalizeLiabilities(
 		if liability.APR > existing.APR {
 			existing.APR = liability.APR
 		}
-		if liability.LimitCents > existing.LimitCents {
-			existing.LimitCents = liability.LimitCents
-		}
-		if liability.MinPaymentCents > existing.MinPaymentCents {
-			existing.MinPaymentCents = liability.MinPaymentCents
-		}
-		if liability.LastStatementCents > existing.LastStatementCents {
-			existing.LastStatementCents = liability.LastStatementCents
-		}
+		existing.LimitCents = greaterOptionalMoney(existing.LimitCents, liability.LimitCents)
+		existing.MinPaymentCents = greaterOptionalMoney(
+			existing.MinPaymentCents,
+			liability.MinPaymentCents,
+		)
+		existing.LastStatementCents = greaterOptionalMoney(
+			existing.LastStatementCents,
+			liability.LastStatementCents,
+		)
 		if existing.StatementDay == 0 {
 			existing.StatementDay = liability.StatementDay
 		}
@@ -309,14 +309,28 @@ func normalizeCurrentBalanceToCents(
 	_ canon.AccountType,
 	amount *float64,
 ) (int64, error) {
-	return optionalMoneyToCents(amount)
-}
-
-func optionalMoneyToCents(amount *float64) (int64, error) {
 	if amount == nil {
 		return 0, nil
 	}
 	return moneyToCents(*amount)
+}
+
+func optionalMoneyToCents(amount *float64) (*int64, error) {
+	if amount == nil {
+		return nil, nil
+	}
+	value, err := moneyToCents(*amount)
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
+func greaterOptionalMoney(existing, candidate *int64) *int64 {
+	if candidate != nil && (existing == nil || *candidate > *existing) {
+		return candidate
+	}
+	return existing
 }
 
 func preferredAPR(aprs []rawAPR) float64 {

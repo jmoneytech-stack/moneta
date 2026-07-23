@@ -246,7 +246,7 @@ func TestSyncProviderItemSurfacesProviderAndIngestSkips(t *testing.T) {
 		Liabilities: []canon.Liability{{
 			AccountRef:      "checking-1",
 			APR:             4.5,
-			MinPaymentCents: 2500,
+			MinPaymentCents: centsPointer(2500),
 		}},
 		Skipped: []canon.SkippedRecord{{
 			Kind:   canon.RecordKindTransaction,

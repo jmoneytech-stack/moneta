@@ -661,8 +661,8 @@ func (w *syncWriter) upsertBalance(ctx context.Context, balance canon.Balance) e
 		account.id,
 		balance.Date,
 		balance.CurrentCents,
-		balance.AvailableCents,
-		balance.LimitCents,
+		nullableCents(balance.AvailableCents),
+		nullableCents(balance.LimitCents),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert balance snapshot: %w", err)
@@ -712,12 +712,12 @@ func (w *syncWriter) upsertLiability(ctx context.Context, liability canon.Liabil
 				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		`,
 			account.id,
-			liability.LimitCents,
+			nullableCents(liability.LimitCents),
 			liability.APR,
 			statementDay,
 			dueDay,
-			liability.MinPaymentCents,
-			liability.LastStatementCents,
+			nullableCents(liability.MinPaymentCents),
+			nullableCents(liability.LastStatementCents),
 		); err != nil {
 			return fmt.Errorf("upsert credit terms: %w", err)
 		}
@@ -735,7 +735,7 @@ func (w *syncWriter) upsertLiability(ctx context.Context, liability canon.Liabil
 				apr = excluded.apr,
 				min_payment_cents = excluded.min_payment_cents,
 				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		`, account.id, liability.APR, liability.MinPaymentCents); err != nil {
+		`, account.id, liability.APR, nullableCents(liability.MinPaymentCents)); err != nil {
 			return fmt.Errorf("upsert loan terms: %w", err)
 		}
 		if _, err := w.tx.ExecContext(ctx,
@@ -919,6 +919,13 @@ func validAccountType(accountType canon.AccountType) bool {
 	default:
 		return false
 	}
+}
+
+func nullableCents(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func nullableCategoryID(category categoryRecord) any {
