@@ -297,6 +297,21 @@ func currencySkipDetail(isoCurrency, unofficialCurrency string) string {
 	return strings.ToUpper(isoCurrency)
 }
 
+// normalizeCurrentBalanceToCents converts Plaid's current balance once at the
+// provider boundary. Plaid reports both credit and loan balances using the
+// canonical liability convention: positive means the user owes money and
+// negative means the institution owes the user. The raw sign is therefore
+// preserved for every account type after conversion to integer cents.
+//
+// accountType is intentionally part of this boundary contract even though
+// Plaid's verified sign convention is uniform across both liability types.
+func normalizeCurrentBalanceToCents(
+	_ canon.AccountType,
+	amount *float64,
+) (int64, error) {
+	return optionalMoneyToCents(amount)
+}
+
 func optionalMoneyToCents(amount *float64) (int64, error) {
 	if amount == nil {
 		return 0, nil

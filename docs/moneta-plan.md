@@ -22,7 +22,7 @@ It ingests financial data from pluggable providers, normalizes it into a canonic
 - Plaid: official `plaid-go` SDK only.
 - TOON: internal encoder package (`internal/toon`), spec-conformant subset, golden-file tests; encode-only, applied at the stdout boundary.
 - Secrets: Plaid `access_token`s encrypted at the application layer with AES-256-GCM, key from `MONETA_ENCRYPTION_KEY` (32-byte base64). No SQLCipher: it requires CGO and breaks clean cross-compilation; disk-level encryption (e.g., FileVault) covers the rest.
-- Money: signed integer cents (`int64`) everywhere internally and in SQLite; negative = outflow; rendered as dollars at output.
+- Money: signed integer cents (`int64`) everywhere internally and in SQLite; transaction negatives are outflows; liability current balances are positive when owed and negative when the institution owes the user; rendered as dollars at output.
 - Distribution: single static binary (`CGO_ENABLED=0`), release matrix for darwin/arm64, darwin/amd64, linux/amd64, linux/arm64, plus `go install`. A Dockerfile ships as an optional distribution artifact for containerized self-hosting.
 
 ## Configuration (env vars / flags only)
@@ -248,10 +248,11 @@ hint: moneta spend --period 2026-06 --by category
 
 A `SKILL.md` ships with the repo so agents can learn the command surface without trial and error, per AXI's ambient-context principle.
 
-## Analytics (precomputed at sync, not derived by the agent)
+## Analytics (computed on read, not derived by the agent)
 
-Month-over-month category trends, top merchants, average daily spend, fixed vs variable expense split, savings rate, subscription total, credit utilization trend.
-Net worth snapshots are computed at sync time (scheduled daily).
+Month-over-month category trends, top merchants, average daily spend, fixed vs variable expense split, savings rate, subscription total, and credit utilization trend are computed on read at personal-finance scale.
+Sync already writes immutable per-account daily `balance_snapshots`; Phase 3 net-worth history carries those balances forward on read without introducing a materialized analytics table.
+A materialized daily net-worth table remains a future option only if measurement or frozen-history requirements justify it.
 
 ## Security
 
@@ -266,6 +267,7 @@ These three requirements are binding for Phase 1 and beyond; code that violates 
 ### 1. Money: integer cents, never floats
 
 - All monetary amounts are `int64` cents in SQLite and in every internal Go struct; no `float64` money anywhere in the core.
+- Liability current balances use one canonical sign at and beyond the provider boundary: positive means owed and negative means the institution owes the user.
 - Every string money input (CLI flags, REST API, manual/JSON provider) parses to cents without ever passing through a float: split on the decimal point with digit validation.
   `$10.50`, `10.50`, `10.5`, and `-3.07` all parse correctly; currency symbols and negatives are handled; more than 2 decimal places is rejected.
 - Plaid boundary: `plaid-go` returns amounts as `float64`.

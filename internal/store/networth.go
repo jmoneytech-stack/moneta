@@ -18,7 +18,7 @@ type NetworthFilter struct {
 
 // NetworthTypeSummary is one canonical account-type aggregate. Count includes
 // accounts without a snapshot; BalancedCount identifies how many contributed
-// to BalanceCents. Liability type balances are positive debt magnitudes.
+// to BalanceCents. Liability balances preserve the canonical sign.
 type NetworthTypeSummary struct {
 	Type          string
 	Count         int
@@ -26,9 +26,9 @@ type NetworthTypeSummary struct {
 	BalanceCents  int64
 }
 
-// NetworthReport is an as-of balance snapshot. Asset balances retain their
-// stored sign. Liability balances are positive magnitudes, and NetworthCents
-// is AssetsCents minus LiabilitiesCents. Accounts without an eligible balance
+// NetworthReport is an as-of balance snapshot. Asset and liability balances
+// retain their canonical sign, and NetworthCents is AssetsCents minus
+// LiabilitiesCents. Accounts without an eligible balance
 // are counted in MissingBalance and omitted from all money totals.
 type NetworthReport struct {
 	AsOf             string
@@ -147,9 +147,6 @@ func ReadNetworth(
 			if amount == math.MinInt64 {
 				return report, fmt.Errorf("liability balance magnitude overflows integer cents")
 			}
-			if amount < 0 {
-				amount = -amount
-			}
 			if err := addNetworthCents(&report.LiabilitiesCents, amount); err != nil {
 				return report, err
 			}
@@ -166,7 +163,8 @@ func ReadNetworth(
 		return report, fmt.Errorf("read networth balances: %w", err)
 	}
 
-	if report.LiabilitiesCents > 0 && report.AssetsCents < math.MinInt64+report.LiabilitiesCents {
+	if (report.LiabilitiesCents > 0 && report.AssetsCents < math.MinInt64+report.LiabilitiesCents) ||
+		(report.LiabilitiesCents < 0 && report.AssetsCents > math.MaxInt64+report.LiabilitiesCents) {
 		return report, fmt.Errorf("networth total overflows integer cents")
 	}
 	report.NetworthCents = report.AssetsCents - report.LiabilitiesCents

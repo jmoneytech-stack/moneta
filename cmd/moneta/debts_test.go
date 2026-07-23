@@ -48,7 +48,7 @@ func seedDebtsCommandDB(t *testing.T) string {
 	missing := insertAccount("Credit Missing", "credit_card", "card-2")
 	if _, err := db.Exec(`
 		INSERT INTO balance_snapshots (account_id, date, current_cents)
-		VALUES (?, '2026-07-22', 340000), (?, '2026-07-22', -500000)
+		VALUES (?, '2026-07-22', 340000), (?, '2026-07-22', 500000)
 	`, card, loan); err != nil {
 		t.Fatalf("insert balances: %v", err)
 	}
