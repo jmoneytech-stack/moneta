@@ -172,6 +172,8 @@ TestUtilizationBlankForNullLimitNotZero: an account with a NULL limit shows no u
 
 ## PR3 - `networth --history`
 
+**Status:** implemented as a compute-on-read daily series with an inclusive local-calendar window and authenticated REST mirror.
+
 **Anchors:** existing as-of query `internal/store/networth.go:87-106` (CTE `ranked_balances` / `ROW_NUMBER() PARTITION BY account_id ... WHERE date <= ?`), `cmd/moneta/networth.go`, `internal/api/handlers.go` (`handleNetworth`).
 
 Extend the existing as-of computation into a **series**: for each day in the requested window, sum each account's latest snapshot on-or-before that day (carry-forward across sync gaps). Compute-on-read (D3-3), no new table.
@@ -186,7 +188,7 @@ TestNetworthHistoryWindowBounds (cmd): --history 90d inclusive/exclusive ends ma
   period semantics.
 ```
 ### Acceptance
-- `moneta networth --history 90d` (TOON + `--json`) and `GET /v1/networth?history=90d` return a per-day series; empty-state and `hint:` line present.
+- `moneta networth --history 90d` (TOON + `--json`) and `GET /v1/networth?history=90d` return exactly 90 points ending on today's local date, inclusive; empty-state and `hint:` line present.
 ### Out of scope
 - Any precompute table. Trends (PR4+).
 

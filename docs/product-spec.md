@@ -19,7 +19,9 @@ Phase 1 implementation and post-review hardening are complete, and the single-ro
 Production `moneta sync` ships on the library path (PR #2).
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` ship on the shared TOON/JSON output path (`internal/toon`, `internal/cli`), with the same reads mirrored as authenticated JSON by loopback-only-default `moneta serve`.
 The post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete: confirmed ingest wedge paths closed, uniform exit codes, transfer-aware `tx` aggregates, durable skip and reauth state, TOON hardening.
-Phase 2 is complete, including GitHub Actions build, vet, test, CGO-free test, and race-test gates. Phase 3 analytics starts only when explicitly prioritized.
+Phase 2 is complete, including GitHub Actions build, vet, test, CGO-free test, and race-test gates.
+Phase 3's liability-sign and nullable-money foundation is complete, and compute-on-read daily net-worth history ships through CLI TOON/JSON and authenticated REST.
+Trends and later Phase 3 features start only when explicitly prioritized.
 
 ## Non-Goals
 
@@ -41,6 +43,6 @@ Phase 2 is complete, including GitHub Actions build, vet, test, CGO-free test, a
 
 1. Phase 1 - schema + provider interface + Plaid provider, verified against Sandbox.
 2. Phase 2 - AXI CLI + REST API, verified by an agent running real command flows.
-3. Phase 3 - precomputed analytics views.
+3. Phase 3 - compute-on-read analytics views.
 4. Phase 4 - recurring detection + anomaly detection.
 5. Post-v1 - optional human web UI on top of the REST API, for viewing and reviewing finances without an agent.

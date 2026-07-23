@@ -340,7 +340,7 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "  tx        list transactions with an aggregate header (TOON on stdout)")
 	fmt.Fprintln(writer, "  spend     summarize posted spending by category and merchant (TOON on stdout)")
 	fmt.Fprintln(writer, "  cashflow  summarize posted inflow, outflow, net, and savings rate (TOON on stdout)")
-	fmt.Fprintln(writer, "  networth  summarize latest assets, liabilities, and net worth (TOON on stdout)")
+	fmt.Fprintln(writer, "  networth  summarize current or daily historical net worth (TOON on stdout)")
 	fmt.Fprintln(writer, "  debts     list credit-card and loan balances with terms (TOON on stdout)")
 	fmt.Fprintln(writer, "  serve     serve authenticated JSON reads over loopback HTTP")
 }

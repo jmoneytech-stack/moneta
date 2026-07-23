@@ -1,6 +1,6 @@
 # Moneta - Architecture Plan
 
-Status: approved design. Phase 1 implementation and post-review hardening are complete. Phase 2 is complete: the poison skip, production `moneta sync`, the `moneta status` / `accounts` / `tx` / `spend` / `cashflow` / `networth` / `debts` reads, the authenticated loopback read-only REST mirror, and GitHub Actions CI are in place, and the post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete. Phase 3 begins only when explicitly prioritized.
+Status: approved design. Phase 1 implementation and post-review hardening are complete. Phase 2 is complete: the poison skip, production `moneta sync`, the `moneta status` / `accounts` / `tx` / `spend` / `cashflow` / `networth` / `debts` reads, the authenticated loopback read-only REST mirror, and GitHub Actions CI are in place, and the post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete. Phase 3's correctness foundation and compute-on-read net-worth history are complete; later analytics begin only when explicitly prioritized.
 Moneta is a self-hosted personal + business finance data hub whose primary consumer is an AI agent, not a human UI.
 It ingests financial data from pluggable providers, normalizes it into a canonical model in SQLite, and exposes it through a token-efficient AXI CLI (TOON output) and a small REST API.
 
@@ -37,12 +37,11 @@ moneta/
   cmd/moneta/            main.go (router, flag parsing)
   internal/canon/        canonical DTOs + Provider interface (no deps)
   internal/core/         ingest + sync orchestration; rules deferred
-  internal/store/        database/sql, migrations, entity bootstrap
+  internal/store/        database/sql, migrations, entity bootstrap, compute-on-read analytics
   internal/providers/
     plaid/               plaid-go, Link page via embed, ONLY Plaid-touching code
     manual/              Phase 2+ JSON/write provider, not yet present
     rmcsv/               Phase 2+ CSV provider, not yet present
-  internal/analytics/    precomputed views, refreshed at sync
   internal/toon/         TOON encoder
   internal/cli/          AXI command implementations
   internal/api/          net/http REST (127.0.0.1, X-API-Key)
@@ -213,7 +212,7 @@ Conventions on every command: TOON on stdout; one record per line (grep/head fri
 | Command | Purpose |
 |---|---|
 | `moneta` | Content-first dashboard: net worth, cash, utilization, upcoming bills, sync health, anomaly count |
-| `moneta networth [--entity] [--asof] [--history 90d]` | Current + historical net worth |
+| `moneta networth [--entity] [--as-of] [--history 90d]` | Current + compute-on-read daily net worth history |
 | `moneta accounts [--entity] [--type]` | name, type, balance, status (4-field default schema) |
 | `moneta tx [--from --to --cat --merchant --account --entity --min --max --search --limit]` | Transactions with aggregate header |
 | `moneta spend --period YYYY-MM [--by category\|merchant\|account] [--entity] [--vs prev]` | Spending summary + deltas |
@@ -222,7 +221,7 @@ Conventions on every command: TOON on stdout; one record per line (grep/head fri
 | `moneta recurring [--entity] [--kind]` | Subscriptions/bills/income with drift flags |
 | `moneta bills [--days 30]` | Upcoming bills + card due dates |
 | `moneta debts [--entity]` / `moneta cards` | Liabilities; card utilization/APR/due dates |
-| `moneta trends [--metric mom\|merchants\|utilization\|savings\|fixed-variable]` | Precomputed analytics views |
+| `moneta trends [--metric mom\|merchants\|utilization\|savings\|fixed-variable]` | Compute-on-read analytics views |
 | `moneta anomalies [--period]` | Unusual spend vs trailing baseline |
 | `moneta sync [--provider]` / `moneta status` | Incremental sync; Item health incl. `reconnection_needed` |
 | `moneta tag <txn-id> [--entity] [--cat] [--note]` | Fix one-off misclassifications rules don't catch |

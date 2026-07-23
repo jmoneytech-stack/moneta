@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/jmoneytech-stack/moneta/internal/cli"
 	"github.com/jmoneytech-stack/moneta/internal/store"
@@ -14,9 +15,20 @@ import (
 )
 
 // runNetworth prints the latest balance snapshot per account, optionally at
-// or before one date. It is read-only against the local database. Exit codes:
-// 0 ok, 1 runtime error, 2 usage.
+// or before one date, or an inclusive daily history ending today. It is
+// read-only against the local database. Exit codes: 0 ok, 1 runtime error,
+// 2 usage.
 func runNetworth(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runNetworthAt(ctx, args, stdout, stderr, time.Now())
+}
+
+func runNetworthAt(
+	ctx context.Context,
+	args []string,
+	stdout io.Writer,
+	stderr io.Writer,
+	now time.Time,
+) int {
 	flags := flag.NewFlagSet("networth", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	databasePath := flags.String(
@@ -29,6 +41,11 @@ func runNetworth(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		"",
 		"latest balance on or before YYYY-MM-DD (default: latest available)",
 	)
+	history := flags.String(
+		"history",
+		"",
+		"daily history for Nd local-calendar days ending today, inclusive (maximum 3660d)",
+	)
 	asJSON := flags.Bool("json", false, "emit JSON instead of TOON")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -40,9 +57,28 @@ func runNetworth(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		fmt.Fprintln(stderr, "error: networth does not accept positional arguments")
 		return 2
 	}
+	historyProvided := false
+	flags.Visit(func(selected *flag.Flag) {
+		if selected.Name == "history" {
+			historyProvided = true
+		}
+	})
+	if historyProvided && *asOf != "" {
+		fmt.Fprintln(stderr, "error: --history cannot be combined with --as-of")
+		return 2
+	}
 	if err := validateCLIDate("as-of", *asOf); err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
+	}
+	var historyFilter store.NetworthHistoryFilter
+	if historyProvided {
+		var err error
+		historyFilter, err = store.ResolveNetworthHistoryWindow(*history, now)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: --history %v\n", err)
+			return 2
+		}
 	}
 	if *databasePath == "" {
 		fmt.Fprintln(stderr, "error: MONETA_DB_PATH or --db is required")
@@ -56,22 +92,71 @@ func runNetworth(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	}
 	defer func() { _ = database.Close() }()
 
+	format := cli.FormatTOON
+	if *asJSON {
+		format = cli.FormatJSON
+	}
+	if historyProvided {
+		report, err := store.ReadNetworthHistory(ctx, database, historyFilter)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		if err := cli.Render(stdout, buildNetworthHistoryDoc(report), format); err != nil {
+			fmt.Fprintf(stderr, "error: render networth history: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
 	filter := store.NetworthFilter{AsOf: *asOf}
 	report, err := store.ReadNetworth(ctx, database, filter)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-
-	format := cli.FormatTOON
-	if *asJSON {
-		format = cli.FormatJSON
-	}
 	if err := cli.Render(stdout, buildNetworthDoc(report, filter), format); err != nil {
 		fmt.Fprintf(stderr, "error: render networth: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+func buildNetworthHistoryDoc(report store.NetworthHistoryReport) toon.Object {
+	history := toon.Table{
+		Fields: []string{"date", "assets", "liabilities", "networth"},
+		Rows:   make([][]any, 0, len(report.Points)),
+	}
+	for _, point := range report.Points {
+		history.Rows = append(history.Rows, []any{
+			point.Date,
+			cli.Money(point.AssetsCents),
+			cli.Money(point.LiabilitiesCents),
+			cli.Money(point.NetworthCents),
+		})
+	}
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "from", Value: report.From},
+			{Key: "to", Value: report.To},
+			{Key: "days", Value: report.Days},
+		}},
+		{Key: "history", Value: history},
+		{Key: "hint", Value: networthHistoryHint(report)},
+	}
+}
+
+func networthHistoryHint(report store.NetworthHistoryReport) string {
+	if !report.HasBalances {
+		return fmt.Sprintf(
+			"no balance snapshots on or before %s; run moneta sync or choose a later history window",
+			report.To,
+		)
+	}
+	return fmt.Sprintf(
+		"run moneta networth --as-of %s for account-type detail",
+		report.To,
+	)
 }
 
 func buildNetworthDoc(report store.NetworthReport, filter store.NetworthFilter) toon.Object {

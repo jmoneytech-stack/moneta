@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jmoneytech-stack/moneta/internal/store"
 )
@@ -91,6 +92,35 @@ func TestRunNetworthEmptyDatabase(t *testing.T) {
 	}
 }
 
+func TestRunNetworthHistoryEmptyDatabase(t *testing.T) {
+	t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.Local)
+	var stdout, stderr bytes.Buffer
+	code := runNetworthAt(
+		context.Background(),
+		[]string{"--history", "3d"},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runNetworthAt() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"from: 2026-07-20",
+		"to: 2026-07-22",
+		"days: 3",
+		"history[3]{date,assets,liabilities,networth}:",
+		"2026-07-20,0,0,0",
+		"no balance snapshots on or before 2026-07-22",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("empty history output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunNetworthRendersLatestSnapshotSummary(t *testing.T) {
 	t.Setenv(databasePathEnvironment, seedNetworthCommandDB(t))
 	var stdout, stderr bytes.Buffer
@@ -140,6 +170,75 @@ func TestRunNetworthAsOfCutoff(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("networth --as-of output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestNetworthHistoryWindowBounds(t *testing.T) {
+	t.Setenv(databasePathEnvironment, seedNetworthCommandDB(t))
+	now := time.Date(2026, time.July, 22, 23, 30, 0, 0, time.FixedZone("local", -7*60*60))
+
+	var stdout, stderr bytes.Buffer
+	code := runNetworthAt(
+		context.Background(),
+		[]string{"--history", "5d"},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runNetworthAt() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"from: 2026-07-18",
+		"to: 2026-07-22",
+		"days: 5",
+		"history[5]{date,assets,liabilities,networth}:",
+		"2026-07-18,5500,3000,2500",
+		"2026-07-22,6200,3400,2800",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("networth --history output missing %q:\n%s", want, out)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runNetworthAt(
+		context.Background(),
+		[]string{"--history", "2d", "--json"},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runNetworthAt(--json) code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	jsonOutput := strings.TrimSpace(stdout.String())
+	if !strings.Contains(jsonOutput, `"summary":{"from":"2026-07-21","to":"2026-07-22","days":2}`) ||
+		!strings.Contains(jsonOutput, `"date":"2026-07-22","assets":6200,"liabilities":3400,"networth":2800`) {
+		t.Errorf("networth history JSON = %q", jsonOutput)
+	}
+
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "bad history", args: []string{"--history", "week"}, want: "--history must use Nd form"},
+		{name: "empty history", args: []string{"--history="}, want: "--history must use Nd form"},
+		{name: "history and as-of", args: []string{"--history", "7d", "--as-of", "2026-07-22"}, want: "--history cannot be combined with --as-of"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := runNetworthAt(context.Background(), test.args, &stdout, &stderr, now)
+			if code != 2 {
+				t.Errorf("runNetworthAt() code = %d, want 2", code)
+			}
+			if !strings.Contains(stderr.String(), test.want) {
+				t.Errorf("stderr = %q, want %q", stderr.String(), test.want)
+			}
+		})
 	}
 }
 

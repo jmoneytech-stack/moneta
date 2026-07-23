@@ -163,15 +163,22 @@ func ReadNetworth(
 		return report, fmt.Errorf("read networth balances: %w", err)
 	}
 
-	if (report.LiabilitiesCents > 0 && report.AssetsCents < math.MinInt64+report.LiabilitiesCents) ||
-		(report.LiabilitiesCents < 0 && report.AssetsCents > math.MaxInt64+report.LiabilitiesCents) {
-		return report, fmt.Errorf("networth total overflows integer cents")
+	report.NetworthCents, err = subtractNetworthCents(report.AssetsCents, report.LiabilitiesCents)
+	if err != nil {
+		return report, err
 	}
-	report.NetworthCents = report.AssetsCents - report.LiabilitiesCents
 	if err := tx.Commit(); err != nil {
 		return report, fmt.Errorf("commit networth read: %w", err)
 	}
 	return report, nil
+}
+
+func subtractNetworthCents(assets, liabilities int64) (int64, error) {
+	if (liabilities > 0 && assets < math.MinInt64+liabilities) ||
+		(liabilities < 0 && assets > math.MaxInt64+liabilities) {
+		return 0, fmt.Errorf("networth total overflows integer cents")
+	}
+	return assets - liabilities, nil
 }
 
 func addNetworthCents(total *int64, amount int64) error {

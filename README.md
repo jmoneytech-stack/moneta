@@ -14,6 +14,7 @@ The complete Link, transactions, balances, liabilities, encrypted persistence, a
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
+The Phase 3 correctness foundation is complete, and `moneta networth --history Nd` adds compute-on-read daily net-worth history without a materialized analytics table.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -148,11 +149,14 @@ Exit codes: 0 ok, 1 error, 2 usage.
 ## Net worth
 
 ```sh
-go run ./cmd/moneta networth [--as-of 2026-07-22] [--json]
+go run ./cmd/moneta networth [--as-of 2026-07-22 | --history 90d] [--json]
 ```
 
 By default, net worth uses each account's latest available balance and reports the newest selected balance date as `as_of`; it is `null` when no balance snapshots exist.
 `--as-of` selects each account's latest balance on or before the inclusive YYYY-MM-DD cutoff and echoes that requested date in the summary.
+`--history Nd` returns exactly N daily points ending on today's local-calendar date, inclusive; the start is the end minus N-1 days, so `90d` returns 90 points.
+History carries each account's latest balance forward across days without a new snapshot and supports 1 through 3660 days.
+`--history` and `--as-of` cannot be combined.
 Checking, savings, investment, and asset accounts contribute to assets.
 Credit-card and loan balances use the canonical provider-boundary sign: positive means owed and negative means the institution owes the user.
 Signed net worth is `assets - liabilities`, so a negative liability credit raises net worth.
@@ -207,7 +211,7 @@ Read routes:
 | `GET /v1/transactions` | `from`, `to`, `account`, `search`, `limit`, `full` |
 | `GET /v1/spend` | `period` or `from` + `to`, `account`, `limit`, `full` |
 | `GET /v1/cashflow` | `period` or `from` + `to`, `account` |
-| `GET /v1/networth` | `as_of` |
+| `GET /v1/networth` | `as_of` or `history=Nd` |
 | `GET /v1/debts` | none |
 
 Period and date semantics match their CLI counterparts.
