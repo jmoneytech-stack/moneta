@@ -116,20 +116,28 @@ func seedAPITestDB(t *testing.T, db *sql.DB) {
 	`, creditID); err != nil {
 		t.Fatalf("insert credit terms: %v", err)
 	}
-	insertTransaction := func(amount int64, merchant string, category any, excluded int, hash string) {
+	insertTransaction := func(
+		date string,
+		amount int64,
+		merchant string,
+		category any,
+		excluded int,
+		hash string,
+	) {
 		t.Helper()
 		if _, err := db.Exec(`
 			INSERT INTO transactions (
 				account_id, entity_id, date, amount_cents, merchant_raw,
 				merchant_norm, category_id, status, excluded, dedup_hash
-			) VALUES (?, ?, '2026-07-10', ?, ?, ?, ?, 'posted', ?, ?)
-		`, checkingID, entityID, amount, merchant, merchant, category, excluded, hash); err != nil {
+			) VALUES (?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?)
+		`, checkingID, entityID, date, amount, merchant, merchant, category, excluded, hash); err != nil {
 			t.Fatalf("insert transaction: %v", err)
 		}
 	}
-	insertTransaction(-2500, "Grocery Mart", int64(7), 0, "spend")
-	insertTransaction(100000, "Employer Example", int64(1), 0, "income")
-	insertTransaction(-50000, "Transfer Example", int64(2), 1, "transfer")
+	insertTransaction("2026-07-10", -2500, "Grocery Mart", int64(7), 0, "spend")
+	insertTransaction("2026-07-10", 100000, "Employer Example", int64(1), 0, "income")
+	insertTransaction("2026-07-10", -50000, "Transfer Example", int64(2), 1, "transfer")
+	insertTransaction("2026-06-10", -1500, "Previous Grocery", int64(7), 0, "previous-spend")
 }
 
 func newTestHandler(t *testing.T, db *sql.DB, logger *log.Logger) http.Handler {
@@ -161,6 +169,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/cashflow?period=2026-07",
 		"/v1/networth",
 		"/v1/debts",
+		"/v1/trends?metric=mom&period=2026-07",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
@@ -195,6 +204,7 @@ func TestAPIReadRoutes(t *testing.T) {
 		{"/v1/cashflow?period=2026-07", []string{`"inflow":1000`, `"outflow":25`, `"net":975`, `"savings_rate":0.975`}},
 		{"/v1/networth?as_of=2026-07-22", []string{`"assets":1200`, `"liabilities":3400`, `"networth":-2200`, `"type":"credit_card"`}},
 		{"/v1/debts", []string{`"total_debt":3400`, `"name":"Credit Example"`, `"utilization":0.34`, `"apr":0.2299`}},
+		{"/v1/trends?metric=mom&period=2026-07", []string{`"metric":"mom"`, `"spend_this":25`, `"spend_prev":15`, `"delta":10`, `"category":"Food and Drink"`}},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -349,6 +359,10 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/networth?history=7d&as_of=2026-07-22", "cannot be combined"},
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
 		{"/v1/debts?unexpected=value", "unknown query parameter"},
+		{"/v1/trends", "metric"},
+		{"/v1/trends?metric=merchants", "unknown metric"},
+		{"/v1/trends?metric=mom&period=2026-13", "valid YYYY-MM"},
+		{"/v1/trends?metric=mom&from=2026-07-01&to=2026-07-31", "requires period"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
