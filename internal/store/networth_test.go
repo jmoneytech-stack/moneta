@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func seedNetworthStoreDB(t *testing.T) func(NetworthFilter) NetworthReport {
@@ -157,6 +158,119 @@ func TestReadNetworthCanBeNegative(t *testing.T) {
 	}
 	if report.NetworthCents != -400000 {
 		t.Errorf("NetworthCents = %d, want -400000", report.NetworthCents)
+	}
+}
+
+func TestNetworthHistoryCarriesForwardAcrossGaps(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID := insertEntity(t, db, "personal", "Personal")
+	checking := insertAccountFull(t, db, entityID, "Checking Example", "checking", "acct-1")
+	insertBalanceSnapshot(t, db, checking, "2026-07-01", 100000)
+	insertBalanceSnapshot(t, db, checking, "2026-07-05", 200000)
+
+	report, err := ReadNetworthHistory(ctx, db, NetworthHistoryFilter{
+		From: "2026-07-01",
+		To:   "2026-07-05",
+	})
+	if err != nil {
+		t.Fatalf("ReadNetworthHistory() error: %v", err)
+	}
+	if report.From != "2026-07-01" || report.To != "2026-07-05" || len(report.Points) != 5 {
+		t.Fatalf("history bounds/length = %s/%s/%d, want 2026-07-01/2026-07-05/5",
+			report.From, report.To, len(report.Points))
+	}
+	want := []int64{100000, 100000, 100000, 100000, 200000}
+	for index, wantCents := range want {
+		point := report.Points[index]
+		if point.AssetsCents != wantCents || point.LiabilitiesCents != 0 ||
+			point.NetworthCents != wantCents {
+			t.Errorf("point %d = %+v, want assets/networth %d", index, point, wantCents)
+		}
+	}
+}
+
+func TestNetworthHistoryRespectsSign(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID := insertEntity(t, db, "personal", "Personal")
+	checking := insertAccountFull(t, db, entityID, "Checking Example", "checking", "acct-1")
+	card := insertAccountFull(t, db, entityID, "Credit Example", "credit_card", "acct-2")
+	insertBalanceSnapshot(t, db, checking, "2026-07-01", 100000)
+	insertBalanceSnapshot(t, db, card, "2026-07-01", 20000)
+	insertBalanceSnapshot(t, db, card, "2026-07-03", -5000)
+
+	report, err := ReadNetworthHistory(ctx, db, NetworthHistoryFilter{
+		From: "2026-07-01",
+		To:   "2026-07-03",
+	})
+	if err != nil {
+		t.Fatalf("ReadNetworthHistory() error: %v", err)
+	}
+	if len(report.Points) != 3 {
+		t.Fatalf("history has %d points, want 3", len(report.Points))
+	}
+	beforeCredit := report.Points[1]
+	if beforeCredit.LiabilitiesCents != 20000 || beforeCredit.NetworthCents != 80000 {
+		t.Errorf("before credit = %+v, want liabilities 20000 / networth 80000", beforeCredit)
+	}
+	credit := report.Points[2]
+	if credit.LiabilitiesCents != -5000 || credit.NetworthCents != 105000 {
+		t.Errorf("credit point = %+v, want liabilities -5000 / networth 105000", credit)
+	}
+}
+
+func TestResolveNetworthHistoryWindow(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 23, 30, 0, 0, time.FixedZone("local", -7*60*60))
+	window, err := ResolveNetworthHistoryWindow("90d", now)
+	if err != nil {
+		t.Fatalf("ResolveNetworthHistoryWindow() error: %v", err)
+	}
+	if window.From != "2026-04-24" || window.To != "2026-07-22" {
+		t.Errorf("window = %+v, want 2026-04-24 through 2026-07-22", window)
+	}
+	for _, value := range []string{"", "0d", "-1d", "7h", "1.5d", "3661d"} {
+		if _, err := ResolveNetworthHistoryWindow(value, now); err == nil {
+			t.Errorf("ResolveNetworthHistoryWindow(%q) succeeded, want error", value)
+		}
+	}
+}
+
+func TestReadNetworthHistoryEmptyAndValidatesFilter(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	report, err := ReadNetworthHistory(ctx, db, NetworthHistoryFilter{
+		From: "2026-07-21",
+		To:   "2026-07-22",
+	})
+	if err != nil {
+		t.Fatalf("ReadNetworthHistory() error: %v", err)
+	}
+	if report.Days != 2 || len(report.Points) != 2 || report.HasBalances {
+		t.Errorf("empty history = %+v, want two zero points without balances", report)
+	}
+	for _, point := range report.Points {
+		if point.AssetsCents != 0 || point.LiabilitiesCents != 0 || point.NetworthCents != 0 {
+			t.Errorf("empty history point = %+v, want zero money", point)
+		}
+	}
+
+	filters := []NetworthHistoryFilter{
+		{},
+		{From: "2026-07-01"},
+		{From: "bad", To: "2026-07-22"},
+		{From: "2026-07-22", To: "2026-07-01"},
+	}
+	for _, filter := range filters {
+		if _, err := ReadNetworthHistory(ctx, db, filter); err == nil {
+			t.Errorf("ReadNetworthHistory(%+v) succeeded, want error", filter)
+		}
+	}
+	if _, err := ReadNetworthHistory(ctx, nil, NetworthHistoryFilter{
+		From: "2026-07-21",
+		To:   "2026-07-22",
+	}); err == nil {
+		t.Error("ReadNetworthHistory(nil db) succeeded, want error")
 	}
 }
 

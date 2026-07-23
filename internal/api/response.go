@@ -405,6 +405,43 @@ func debtsHint(report store.DebtReport) string {
 	return "run moneta networth to compare total debt with assets"
 }
 
+func buildNetworthHistoryDocument(report store.NetworthHistoryReport) toon.Object {
+	history := toon.Table{
+		Fields: []string{"date", "assets", "liabilities", "networth"},
+		Rows:   make([][]any, 0, len(report.Points)),
+	}
+	for _, point := range report.Points {
+		history.Rows = append(history.Rows, []any{
+			point.Date,
+			cli.Money(point.AssetsCents),
+			cli.Money(point.LiabilitiesCents),
+			cli.Money(point.NetworthCents),
+		})
+	}
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "from", Value: report.From},
+			{Key: "to", Value: report.To},
+			{Key: "days", Value: report.Days},
+		}},
+		{Key: "history", Value: history},
+		{Key: "hint", Value: networthHistoryHint(report)},
+	}
+}
+
+func networthHistoryHint(report store.NetworthHistoryReport) string {
+	if !report.HasBalances {
+		return fmt.Sprintf(
+			"no balance snapshots on or before %s; run moneta sync or choose a later history window",
+			report.To,
+		)
+	}
+	return fmt.Sprintf(
+		"run moneta networth --as-of %s for account-type detail",
+		report.To,
+	)
+}
+
 func buildNetworthDocument(report store.NetworthReport, filter store.NetworthFilter) toon.Object {
 	asOf := any(nil)
 	if report.AsOf != "" {

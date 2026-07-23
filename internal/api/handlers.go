@@ -185,7 +185,7 @@ func (s *server) handleCashflow(writer http.ResponseWriter, request *http.Reques
 
 func (s *server) handleNetworth(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
-	if err := validateQueryKeys(query, "as_of"); err != nil {
+	if err := validateQueryKeys(query, "as_of", "history"); err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -194,10 +194,47 @@ func (s *server) handleNetworth(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
+	history, err := queryValue(query, "history")
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	_, historyProvided := query["history"]
+	if asOf != "" && historyProvided {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"query parameter \"history\" cannot be combined with \"as_of\"",
+		)
+		return
+	}
 	if err := validateDate("as_of", asOf); err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
+	if historyProvided {
+		now := time.Now()
+		if s.now != nil {
+			now = s.now()
+		}
+		filter, err := store.ResolveNetworthHistoryWindow(history, now)
+		if err != nil {
+			writeError(
+				writer,
+				http.StatusBadRequest,
+				fmt.Sprintf("query parameter %q %v", "history", err),
+			)
+			return
+		}
+		report, err := store.ReadNetworthHistory(request.Context(), s.db, filter)
+		if err != nil {
+			s.internalError(writer, "read networth history", err)
+			return
+		}
+		writeDocument(writer, buildNetworthHistoryDocument(report))
+		return
+	}
+
 	filter := store.NetworthFilter{AsOf: asOf}
 	report, err := store.ReadNetworth(request.Context(), s.db, filter)
 	if err != nil {

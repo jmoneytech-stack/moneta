@@ -24,6 +24,7 @@ type server struct {
 	db         *sql.DB
 	apiKeyHash [sha256.Size]byte
 	logger     *log.Logger
+	now        func() time.Time
 }
 
 // NewHandler returns the authenticated read-only REST handler. The API key is
@@ -42,6 +43,7 @@ func NewHandler(db *sql.DB, apiKey string, logger *log.Logger) (http.Handler, er
 		db:         db,
 		apiKeyHash: sha256.Sum256([]byte(apiKey)),
 		logger:     logger,
+		now:        time.Now,
 	}
 	mux := http.NewServeMux()
 	routes := []struct {

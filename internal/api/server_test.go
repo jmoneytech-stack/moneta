@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jmoneytech-stack/moneta/internal/store"
 )
@@ -216,6 +217,55 @@ func TestAPIReadRoutes(t *testing.T) {
 	}
 }
 
+func TestAPINetworthHistory(t *testing.T) {
+	db := openAPITestDB(t)
+	entityID, err := store.EnsureDefaultEntity(context.Background(), db)
+	if err != nil {
+		t.Fatalf("EnsureDefaultEntity() error: %v", err)
+	}
+	accountResult, err := db.Exec(`
+		INSERT INTO accounts (
+			entity_id, type, name, institution, provider, provider_account_id
+		) VALUES (?, 'checking', 'History Checking', 'Fake Bank', 'plaid', 'history-checking')
+	`, entityID)
+	if err != nil {
+		t.Fatalf("insert history account: %v", err)
+	}
+	accountID, err := accountResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("history account id: %v", err)
+	}
+	fixedNow := time.Date(2026, time.July, 22, 23, 30, 0, 0, time.FixedZone("local", -7*60*60))
+	today := fixedNow.Format("2006-01-02")
+	if _, err := db.Exec(`
+		INSERT INTO balance_snapshots (account_id, date, current_cents)
+		VALUES (?, ?, 123400)
+	`, accountID, today); err != nil {
+		t.Fatalf("insert history balance: %v", err)
+	}
+
+	var logs bytes.Buffer
+	s := &server{
+		db:         db,
+		apiKeyHash: sha256.Sum256([]byte(testAPIKey)),
+		logger:     log.New(&logs, "", 0),
+		now:        func() time.Time { return fixedNow },
+	}
+	handler := s.authenticate(s.recoverPanics(http.HandlerFunc(s.handleNetworth)))
+	response := performRequest(handler, "/v1/networth?history=1d", testAPIKey)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET history = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{
+		`"summary":{"from":"` + today + `","to":"` + today + `","days":1}`,
+		`"history":[{"date":"` + today + `","assets":1234,"liabilities":0,"networth":1234}]`,
+	} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Errorf("history response missing %q: %s", want, response.Body.String())
+		}
+	}
+}
+
 func TestAPIRecoversPanicsAndContinuesServing(t *testing.T) {
 	var logs bytes.Buffer
 	s := &server{
@@ -294,6 +344,9 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/spend?period=2026-07&from=2026-07-01&to=2026-07-31", "cannot be combined"},
 		{"/v1/cashflow?from=2026-07-01", "must be provided together"},
 		{"/v1/networth?as_of=bad", "valid YYYY-MM-DD"},
+		{"/v1/networth?history=week", "must use Nd form"},
+		{"/v1/networth?history=", "must use Nd form"},
+		{"/v1/networth?history=7d&as_of=2026-07-22", "cannot be combined"},
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
 		{"/v1/debts?unexpected=value", "unknown query parameter"},
 	}
