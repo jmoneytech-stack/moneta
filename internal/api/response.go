@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
-	"strings"
 
 	"github.com/jmoneytech-stack/moneta/internal/cli"
 	"github.com/jmoneytech-stack/moneta/internal/store"
@@ -309,34 +307,7 @@ func buildCashflowDocument(summary store.CashflowSummary, filter store.CashflowF
 }
 
 func savingsRateNumber(netCents, inflowCents int64) *toon.Number {
-	if inflowCents <= 0 {
-		return nil
-	}
-	const decimalPlaces = 4
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(decimalPlaces), nil)
-	numerator := new(big.Int).Mul(big.NewInt(netCents), scale)
-	scaled := new(big.Int).Quo(numerator, big.NewInt(inflowCents))
-	value := toon.Number(formatScaledInteger(scaled, decimalPlaces))
-	return &value
-}
-
-func formatScaledInteger(value *big.Int, decimalPlaces int) string {
-	negative := value.Sign() < 0
-	magnitude := new(big.Int).Abs(new(big.Int).Set(value)).String()
-	if len(magnitude) <= decimalPlaces {
-		magnitude = strings.Repeat("0", decimalPlaces-len(magnitude)+1) + magnitude
-	}
-	split := len(magnitude) - decimalPlaces
-	whole := magnitude[:split]
-	fraction := strings.TrimRight(magnitude[split:], "0")
-	formatted := whole
-	if fraction != "" {
-		formatted += "." + fraction
-	}
-	if negative && formatted != "0" {
-		formatted = "-" + formatted
-	}
-	return formatted
+	return cli.Ratio(netCents, inflowCents, 4)
 }
 
 func cashflowHint(summary store.CashflowSummary, filter store.CashflowFilter) string {
@@ -403,6 +374,43 @@ func debtsHint(report store.DebtReport) string {
 		return "run moneta sync to pull balances for debt accounts with no snapshot"
 	}
 	return "run moneta networth to compare total debt with assets"
+}
+
+func buildTrendSavingsDocument(
+	summary store.CashflowSummary,
+	filter store.CashflowFilter,
+) toon.Object {
+	rate := any(nil)
+	if value := savingsRateNumber(summary.NetCents, summary.InflowCents); value != nil {
+		rate = *value
+	}
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "metric", Value: "savings"},
+			{Key: "from", Value: filter.From},
+			{Key: "to", Value: filter.To},
+			{Key: "count", Value: summary.Count},
+			{Key: "inflow", Value: cli.Money(summary.InflowCents)},
+			{Key: "outflow", Value: cli.Money(summary.OutflowCents)},
+			{Key: "net", Value: cli.Money(summary.NetCents)},
+			{Key: "savings_rate", Value: rate},
+		}},
+		{Key: "hint", Value: trendSavingsHint(summary, filter)},
+	}
+}
+
+func trendSavingsHint(summary store.CashflowSummary, filter store.CashflowFilter) string {
+	if summary.Count == 0 {
+		return "no posted cashflow in this period; widen period/from/to or run moneta sync"
+	}
+	if summary.InflowCents == 0 {
+		return "savings_rate is null because inflow is zero; widen the period or inspect moneta tx"
+	}
+	return fmt.Sprintf(
+		"run moneta cashflow --from %s --to %s to inspect the matching cashflow summary",
+		filter.From,
+		filter.To,
+	)
 }
 
 func buildTrendUtilizationDocument(report store.TrendUtilizationReport) toon.Object {

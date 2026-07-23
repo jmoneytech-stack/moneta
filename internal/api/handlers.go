@@ -269,15 +269,16 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 		writeError(
 			writer,
 			http.StatusBadRequest,
-			"query parameter \"metric\" is required (supported: mom, merchants, utilization)",
+			"query parameter \"metric\" is required (supported: mom, merchants, utilization, savings)",
 		)
 		return
 	}
-	if metric != "mom" && metric != "merchants" && metric != "utilization" {
+	if metric != "mom" && metric != "merchants" && metric != "utilization" &&
+		metric != "savings" {
 		writeError(
 			writer,
 			http.StatusBadRequest,
-			fmt.Sprintf("unknown metric %q (supported: mom, merchants, utilization)", metric),
+			fmt.Sprintf("unknown metric %q (supported: mom, merchants, utilization, savings)", metric),
 		)
 		return
 	}
@@ -290,6 +291,7 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 	var momPeriod store.TrendMoMPeriod
 	var merchantsPeriod period
 	var utilizationPeriod period
+	var savingsPeriod period
 	switch metric {
 	case "mom":
 		if historyProvided {
@@ -388,6 +390,24 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 			}
 			utilizationPeriod = period{from: window.From, to: window.To}
 		}
+	case "savings":
+		if historyProvided {
+			writeError(writer, http.StatusBadRequest, "history is supported only by metric utilization")
+			return
+		}
+		if _, ok := query["limit"]; ok {
+			writeError(writer, http.StatusBadRequest, "limit/full are unsupported by metric savings")
+			return
+		}
+		if _, ok := query["full"]; ok {
+			writeError(writer, http.StatusBadRequest, "limit/full are unsupported by metric savings")
+			return
+		}
+		savingsPeriod, err = resolvePeriod(query, now)
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	account, err := queryValue(query, "account")
@@ -396,7 +416,7 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	limit := 0
-	if metric != "utilization" {
+	if metric != "utilization" && metric != "savings" {
 		limit, _, err = parseLimit(query)
 		if err != nil {
 			writeError(writer, http.StatusBadRequest, err.Error())
@@ -439,6 +459,16 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 			return
 		}
 		writeDocument(writer, buildTrendUtilizationDocument(report))
+	case "savings":
+		filter := store.CashflowFilter{
+			From: savingsPeriod.from, To: savingsPeriod.to, Account: account,
+		}
+		summary, err := store.ReadCashflow(request.Context(), s.db, filter)
+		if err != nil {
+			s.internalError(writer, "read savings trends", err)
+			return
+		}
+		writeDocument(writer, buildTrendSavingsDocument(summary, filter))
 	}
 }
 

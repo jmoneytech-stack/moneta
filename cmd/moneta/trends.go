@@ -18,7 +18,8 @@ const (
 	trendMetricMoM         = "mom"
 	trendMetricMerchants   = "merchants"
 	trendMetricUtilization = "utilization"
-	trendMetricsHelp       = "mom, merchants, utilization"
+	trendMetricSavings     = "savings"
+	trendMetricsHelp       = "mom, merchants, utilization, savings"
 )
 
 // runTrends dispatches one compute-on-read trend metric. Each metric owns its
@@ -81,7 +82,7 @@ func runTrendsAt(
 		return 2
 	}
 	if *metric != trendMetricMoM && *metric != trendMetricMerchants &&
-		*metric != trendMetricUtilization {
+		*metric != trendMetricUtilization && *metric != trendMetricSavings {
 		fmt.Fprintf(
 			stderr,
 			"error: unknown --metric %q (supported: %s)\n",
@@ -94,6 +95,7 @@ func runTrendsAt(
 	var momFilter store.TrendMoMFilter
 	var merchantsFilter store.TrendMerchantsFilter
 	var utilizationFilter store.TrendUtilizationFilter
+	var savingsFilter store.CashflowFilter
 	switch *metric {
 	case trendMetricMoM:
 		if provided["history"] {
@@ -155,6 +157,23 @@ func runTrendsAt(
 		utilizationFilter = store.TrendUtilizationFilter{
 			From: period.From, To: period.To, Account: *account,
 		}
+	case trendMetricSavings:
+		if provided["history"] {
+			fmt.Fprintln(stderr, "error: --history is supported only by --metric utilization")
+			return 2
+		}
+		if provided["limit"] || provided["full"] {
+			fmt.Fprintln(stderr, "error: --limit/--full are unsupported by --metric savings")
+			return 2
+		}
+		period, err := resolveReadPeriod(*periodValue, *from, *to, now)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+		savingsFilter = store.CashflowFilter{
+			From: period.From, To: period.To, Account: *account,
+		}
 	}
 
 	if *databasePath == "" {
@@ -196,6 +215,13 @@ func runTrendsAt(
 			return 1
 		}
 		document = buildTrendUtilizationDoc(report)
+	case trendMetricSavings:
+		summary, err := store.ReadCashflow(ctx, database, savingsFilter)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		document = buildTrendSavingsDoc(summary, savingsFilter)
 	}
 
 	format := cli.FormatTOON
@@ -207,6 +233,43 @@ func runTrendsAt(
 		return 1
 	}
 	return 0
+}
+
+func buildTrendSavingsDoc(
+	summary store.CashflowSummary,
+	filter store.CashflowFilter,
+) toon.Object {
+	rate := any(nil)
+	if value := savingsRateNumber(summary.NetCents, summary.InflowCents); value != nil {
+		rate = *value
+	}
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "metric", Value: trendMetricSavings},
+			{Key: "from", Value: filter.From},
+			{Key: "to", Value: filter.To},
+			{Key: "count", Value: summary.Count},
+			{Key: "inflow", Value: cli.Money(summary.InflowCents)},
+			{Key: "outflow", Value: cli.Money(summary.OutflowCents)},
+			{Key: "net", Value: cli.Money(summary.NetCents)},
+			{Key: "savings_rate", Value: rate},
+		}},
+		{Key: "hint", Value: trendSavingsHint(summary, filter)},
+	}
+}
+
+func trendSavingsHint(summary store.CashflowSummary, filter store.CashflowFilter) string {
+	if summary.Count == 0 {
+		return "no posted cashflow in this period; widen --period/--from/--to or run moneta sync"
+	}
+	if summary.InflowCents == 0 {
+		return "savings_rate is null because inflow is zero; widen the period or inspect moneta tx"
+	}
+	return fmt.Sprintf(
+		"run moneta cashflow --from %s --to %s to inspect the matching cashflow summary",
+		filter.From,
+		filter.To,
+	)
 }
 
 func resolveTrendUtilizationPeriod(

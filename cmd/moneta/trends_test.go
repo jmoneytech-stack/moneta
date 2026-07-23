@@ -301,6 +301,112 @@ func TestRunTrendsUtilizationEmptyDefaultsToThirtyDays(t *testing.T) {
 	}
 }
 
+func TestRunTrendsSavingsRendersTOONJSONAndMatchesCashflow(t *testing.T) {
+	t.Setenv(databasePathEnvironment, seedSpendCommandDB(t, 0))
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
+
+	var stdout, stderr bytes.Buffer
+	code := runTrendsAt(
+		context.Background(),
+		[]string{"--metric", "savings"},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runTrendsAt() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"metric: savings",
+		"from: 2026-07-01",
+		"to: 2026-07-31",
+		"count: 3",
+		"inflow: 1000",
+		"outflow: 25",
+		"net: 975",
+		"savings_rate: 0.975",
+		"run moneta cashflow --from 2026-07-01 --to 2026-07-31",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("savings output missing %q:\n%s", want, out)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runTrendsAt(
+		context.Background(),
+		[]string{
+			"--metric", "savings",
+			"--from", "2026-07-01",
+			"--to", "2026-07-31",
+			"--json",
+		},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runTrendsAt(JSON) code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	savingsJSON := strings.TrimSpace(stdout.String())
+	wantSavings := `"summary":{"metric":"savings","from":"2026-07-01","to":"2026-07-31","count":3,"inflow":1000,"outflow":25,"net":975,"savings_rate":0.975}`
+	if !strings.Contains(savingsJSON, wantSavings) {
+		t.Errorf("savings JSON = %q, want %q", savingsJSON, wantSavings)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run(
+		context.Background(),
+		[]string{"cashflow", "--period", "2026-07", "--json"},
+		&stdout,
+		&stderr,
+	)
+	if code != 0 {
+		t.Fatalf("run(cashflow JSON) code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	cashflowJSON := strings.TrimSpace(stdout.String())
+	for _, field := range []string{
+		`"count":3`,
+		`"inflow":1000`,
+		`"outflow":25`,
+		`"net":975`,
+		`"savings_rate":0.975`,
+	} {
+		if !strings.Contains(savingsJSON, field) || !strings.Contains(cashflowJSON, field) {
+			t.Errorf("cashflow/savings parity missing %q:\nsavings=%s\ncashflow=%s",
+				field, savingsJSON, cashflowJSON)
+		}
+	}
+}
+
+func TestRunTrendsSavingsZeroInflowUsesNullRate(t *testing.T) {
+	// merchantCount=1 seeds one posted -$1 outflow and no inflow.
+	t.Setenv(databasePathEnvironment, seedSpendCommandDB(t, 1))
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{
+		"trends", "--metric", "savings", "--period", "2026-07",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"count: 1",
+		"inflow: 0",
+		"outflow: 1",
+		"net: -1",
+		"savings_rate: null",
+		"savings_rate is null because inflow is zero",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("zero-inflow savings output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunTrendsMerchantsRendersTOONAndJSON(t *testing.T) {
 	t.Setenv(databasePathEnvironment, seedSpendCommandDB(t, 0))
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
@@ -413,7 +519,7 @@ func TestRunTrendsUsageAndConfigErrors(t *testing.T) {
 		wantText string
 	}{
 		{"missing metric", []string{"trends", "--period", "2026-07"}, filepath.Join(t.TempDir(), "db"), "--metric is required"},
-		{"unknown metric", []string{"trends", "--metric", "savings"}, filepath.Join(t.TempDir(), "db"), "unknown --metric"},
+		{"unknown metric", []string{"trends", "--metric", "fixed-variable"}, filepath.Join(t.TempDir(), "db"), "unknown --metric"},
 		{"mom custom dates rejected", []string{"trends", "--metric", "mom", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "--metric mom requires --period"},
 		{"mom invalid period", []string{"trends", "--metric", "mom", "--period", "2026-13"}, filepath.Join(t.TempDir(), "db"), "valid YYYY-MM"},
 		{"merchants month and dates conflict", []string{"trends", "--metric", "merchants", "--period", "2026-07", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "cannot be combined"},
@@ -424,9 +530,13 @@ func TestRunTrendsUsageAndConfigErrors(t *testing.T) {
 		{"utilization window conflict", []string{"trends", "--metric", "utilization", "--history", "30d", "--period", "2026-07"}, filepath.Join(t.TempDir(), "db"), "cannot be combined"},
 		{"utilization invalid history", []string{"trends", "--metric", "utilization", "--history", "0d"}, filepath.Join(t.TempDir(), "db"), "at least 1 day"},
 		{"utilization rejects row limit", []string{"trends", "--metric", "utilization", "--limit", "5"}, filepath.Join(t.TempDir(), "db"), "--limit/--full are unsupported"},
+		{"savings rejects history", []string{"trends", "--metric", "savings", "--history", "30d"}, filepath.Join(t.TempDir(), "db"), "--history is supported only"},
+		{"savings rejects row limit", []string{"trends", "--metric", "savings", "--full"}, filepath.Join(t.TempDir(), "db"), "--limit/--full are unsupported"},
+		{"savings month and dates conflict", []string{"trends", "--metric", "savings", "--period", "2026-07", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "cannot be combined"},
 		{"mom missing database", []string{"trends", "--metric", "mom", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
 		{"merchants missing database", []string{"trends", "--metric", "merchants", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
 		{"utilization missing database", []string{"trends", "--metric", "utilization", "--history", "1d"}, "", "MONETA_DB_PATH or --db is required"},
+		{"savings missing database", []string{"trends", "--metric", "savings", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
