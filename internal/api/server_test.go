@@ -173,6 +173,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/trends?metric=mom&period=2026-07",
 		"/v1/trends?metric=merchants&period=2026-07",
 		"/v1/trends?metric=utilization&history=1d",
+		"/v1/trends?metric=savings&period=2026-07",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
@@ -212,6 +213,7 @@ func TestAPIReadRoutes(t *testing.T) {
 		{"/v1/trends?metric=merchants&from=2026-07-01&to=2026-07-31", []string{`"metric":"merchants"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"spend":25`, `"count":2`}},
 		{"/v1/trends?metric=utilization&from=2026-07-22&to=2026-07-22", []string{`"metric":"utilization"`, `"days":1`, `"accounts":1`, `"missing_limit_days":0`, `"date":"2026-07-22"`, `"utilization":0.34`, `"debt":3400`, `"limit":10000`}},
 		{"/v1/trends?metric=utilization&period=2026-07", []string{`"metric":"utilization"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"days":31`, `"utilization":0.34`}},
+		{"/v1/trends?metric=savings&period=2026-07", []string{`"metric":"savings"`, `"count":3`, `"inflow":1000`, `"outflow":25`, `"net":975`, `"savings_rate":0.975`}},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -231,6 +233,30 @@ func TestAPIReadRoutes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAPITrendSavingsMatchesCashflow(t *testing.T) {
+	db := openAPITestDB(t)
+	seedAPITestDB(t, db)
+	handler := newTestHandler(t, db, nil)
+	cashflow := performRequest(handler, "/v1/cashflow?period=2026-07", testAPIKey)
+	savings := performRequest(handler, "/v1/trends?metric=savings&period=2026-07", testAPIKey)
+	if cashflow.Code != http.StatusOK || savings.Code != http.StatusOK {
+		t.Fatalf("cashflow/savings status = %d/%d, want 200/200", cashflow.Code, savings.Code)
+	}
+	for _, field := range []string{
+		`"count":3`,
+		`"inflow":1000`,
+		`"outflow":25`,
+		`"net":975`,
+		`"savings_rate":0.975`,
+	} {
+		if !strings.Contains(cashflow.Body.String(), field) ||
+			!strings.Contains(savings.Body.String(), field) {
+			t.Errorf("cashflow/savings parity missing %q:\ncashflow=%s\nsavings=%s",
+				field, cashflow.Body.String(), savings.Body.String())
+		}
 	}
 }
 
@@ -393,7 +419,7 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
 		{"/v1/debts?unexpected=value", "unknown query parameter"},
 		{"/v1/trends", "metric"},
-		{"/v1/trends?metric=savings", "unknown metric"},
+		{"/v1/trends?metric=fixed-variable", "unknown metric"},
 		{"/v1/trends?metric=mom&period=2026-13", "valid YYYY-MM"},
 		{"/v1/trends?metric=mom&from=2026-07-01&to=2026-07-31", "requires period"},
 		{"/v1/trends?metric=merchants&period=2026-13", "valid YYYY-MM"},
@@ -404,6 +430,9 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/trends?metric=utilization&history=0d", "at least 1 day"},
 		{"/v1/trends?metric=utilization&history=30d&period=2026-07", "cannot be combined"},
 		{"/v1/trends?metric=utilization&limit=5", "limit/full are unsupported"},
+		{"/v1/trends?metric=savings&history=30d", "history is supported only"},
+		{"/v1/trends?metric=savings&full=true", "limit/full are unsupported"},
+		{"/v1/trends?metric=savings&period=2026-07&from=2026-07-01&to=2026-07-31", "cannot be combined"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {

@@ -199,7 +199,8 @@ TestNetworthHistoryWindowBounds (cmd): --history 90d inclusive/exclusive ends ma
 **PR4 status:** `mom` is implemented with calendar-month comparison, category-ID grouping, absolute-delta ordering, CLI TOON/JSON, and authenticated REST.
 **PR5 status:** `merchants` is implemented with spend-style period windows, exact `merchant_norm` grouping, one unknown bucket, spend ordering, CLI TOON/JSON, and authenticated REST.
 **PR6 status:** `utilization` is implemented as a carried-forward daily credit-card portfolio series with a 30-day default, alternative history/month/custom windows, nullable snapshot-limit handling with current-terms fallback, integer-ratio output, and authenticated REST.
-PR7 savings is next; the other metric names remain rejected until their own PRs land.
+**PR7 status:** `savings` is implemented as a summary-only projection over the existing cashflow store aggregation, with cashflow-style period windows, integer-ratio output, CLI TOON/JSON, and authenticated REST.
+PR8 fixed-variable remains blocked on the R3 definition; its metric name remains rejected until explicitly resolved and started.
 
 New `moneta trends` command + `/v1/trends`, following AXI conventions (summary, per-row, truncation, hint, `--json`). Reuses `spend`/`cashflow` exclusion + period helpers. Each `--metric` is its **own PR** on this template:
 
