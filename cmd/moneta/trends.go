@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	trendMetricMoM       = "mom"
-	trendMetricMerchants = "merchants"
-	trendMetricsHelp     = "mom, merchants"
+	trendMetricMoM         = "mom"
+	trendMetricMerchants   = "merchants"
+	trendMetricUtilization = "utilization"
+	trendMetricsHelp       = "mom, merchants, utilization"
 )
 
 // runTrends dispatches one compute-on-read trend metric. Each metric owns its
@@ -46,6 +47,7 @@ func runTrendsAt(
 		"",
 		"calendar month in YYYY-MM form (default: current local month)",
 	)
+	history := flags.String("history", "", "daily history window in Nd form (utilization only; default 30d)")
 	from := flags.String("from", "", "custom start date for supported metrics, YYYY-MM-DD")
 	to := flags.String("to", "", "custom end date for supported metrics, YYYY-MM-DD")
 	account := flags.String(
@@ -66,6 +68,10 @@ func runTrendsAt(
 		fmt.Fprintln(stderr, "error: trends does not accept positional arguments")
 		return 2
 	}
+	provided := make(map[string]bool)
+	flags.Visit(func(value *flag.Flag) {
+		provided[value.Name] = true
+	})
 	if *limit < 1 {
 		fmt.Fprintln(stderr, "error: --limit must be at least 1")
 		return 2
@@ -74,7 +80,8 @@ func runTrendsAt(
 		fmt.Fprintf(stderr, "error: --metric is required (supported: %s)\n", trendMetricsHelp)
 		return 2
 	}
-	if *metric != trendMetricMoM && *metric != trendMetricMerchants {
+	if *metric != trendMetricMoM && *metric != trendMetricMerchants &&
+		*metric != trendMetricUtilization {
 		fmt.Fprintf(
 			stderr,
 			"error: unknown --metric %q (supported: %s)\n",
@@ -86,8 +93,13 @@ func runTrendsAt(
 
 	var momFilter store.TrendMoMFilter
 	var merchantsFilter store.TrendMerchantsFilter
+	var utilizationFilter store.TrendUtilizationFilter
 	switch *metric {
 	case trendMetricMoM:
+		if provided["history"] {
+			fmt.Fprintln(stderr, "error: --history is supported only by --metric utilization")
+			return 2
+		}
 		if *from != "" || *to != "" {
 			fmt.Fprintln(
 				stderr,
@@ -108,12 +120,39 @@ func runTrendsAt(
 			Account:  *account,
 		}
 	case trendMetricMerchants:
+		if provided["history"] {
+			fmt.Fprintln(stderr, "error: --history is supported only by --metric utilization")
+			return 2
+		}
 		period, err := resolveReadPeriod(*periodValue, *from, *to, now)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 2
 		}
 		merchantsFilter = store.TrendMerchantsFilter{
+			From: period.From, To: period.To, Account: *account,
+		}
+	case trendMetricUtilization:
+		if provided["limit"] || provided["full"] {
+			fmt.Fprintln(stderr, "error: --limit/--full are unsupported by --metric utilization")
+			return 2
+		}
+		period, err := resolveTrendUtilizationPeriod(
+			*history,
+			provided["history"],
+			*periodValue,
+			provided["period"],
+			*from,
+			provided["from"],
+			*to,
+			provided["to"],
+			now,
+		)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+		utilizationFilter = store.TrendUtilizationFilter{
 			From: period.From, To: period.To, Account: *account,
 		}
 	}
@@ -150,6 +189,13 @@ func runTrendsAt(
 			return 1
 		}
 		document = buildTrendMerchantsDoc(report, merchantsFilter)
+	case trendMetricUtilization:
+		report, err := store.ReadTrendUtilization(ctx, database, utilizationFilter)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		document = buildTrendUtilizationDoc(report)
 	}
 
 	format := cli.FormatTOON
@@ -161,6 +207,94 @@ func runTrendsAt(
 		return 1
 	}
 	return 0
+}
+
+func resolveTrendUtilizationPeriod(
+	history string,
+	historyProvided bool,
+	periodValue string,
+	periodProvided bool,
+	from string,
+	fromProvided bool,
+	to string,
+	toProvided bool,
+	now time.Time,
+) (readPeriod, error) {
+	if historyProvided && (periodProvided || fromProvided || toProvided) {
+		return readPeriod{}, fmt.Errorf("--history cannot be combined with --period, --from, or --to")
+	}
+	if historyProvided {
+		window, err := store.ResolveNetworthHistoryWindow(history, now)
+		if err != nil {
+			return readPeriod{}, fmt.Errorf("--history %v", err)
+		}
+		return readPeriod{From: window.From, To: window.To}, nil
+	}
+	if periodProvided || fromProvided || toProvided {
+		return resolveReadPeriod(periodValue, from, to, now)
+	}
+	window, err := store.ResolveNetworthHistoryWindow("30d", now)
+	if err != nil {
+		return readPeriod{}, err
+	}
+	return readPeriod{From: window.From, To: window.To}, nil
+}
+
+func buildTrendUtilizationDoc(report store.TrendUtilizationReport) toon.Object {
+	history := toon.Table{
+		Fields: []string{"date", "utilization", "debt", "limit", "accounts"},
+		Rows:   make([][]any, 0, len(report.Points)),
+	}
+	for _, point := range report.Points {
+		utilization := any(nil)
+		if point.HasUtilization {
+			if value := cli.Ratio(point.DebtCents, point.LimitCents, 4); value != nil {
+				utilization = *value
+			}
+		}
+		history.Rows = append(history.Rows, []any{
+			point.Date,
+			utilization,
+			cli.Money(point.DebtCents),
+			cli.Money(point.LimitCents),
+			point.Accounts,
+		})
+	}
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "metric", Value: trendMetricUtilization},
+			{Key: "from", Value: report.From},
+			{Key: "to", Value: report.To},
+			{Key: "days", Value: report.Days},
+			{Key: "accounts", Value: report.Accounts},
+			{Key: "missing_limit_days", Value: report.MissingLimitDays},
+		}},
+		{Key: "history", Value: history},
+		{Key: "hint", Value: trendUtilizationHint(report)},
+	}
+}
+
+func trendUtilizationHint(report store.TrendUtilizationReport) string {
+	if report.Accounts == 0 {
+		return "no credit-card accounts match this window; run moneta sync or relax --account"
+	}
+	hasUtilization := false
+	for _, point := range report.Points {
+		if point.HasUtilization {
+			hasUtilization = true
+			break
+		}
+	}
+	if !hasUtilization {
+		if report.MissingLimitDays > 0 {
+			return "no usable positive credit limits; run moneta sync to refresh card limits"
+		}
+		return "no credit-card balance snapshots on or before this window; run moneta sync"
+	}
+	if report.MissingLimitDays > 0 {
+		return "some card-days exclude missing or non-positive limits; run moneta sync"
+	}
+	return "run moneta debts to inspect current card balances and limits"
 }
 
 func buildTrendMerchantsDoc(

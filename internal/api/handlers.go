@@ -249,6 +249,7 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 	if err := validateQueryKeys(
 		query,
 		"metric",
+		"history",
 		"period",
 		"from",
 		"to",
@@ -268,15 +269,15 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 		writeError(
 			writer,
 			http.StatusBadRequest,
-			"query parameter \"metric\" is required (supported: mom, merchants)",
+			"query parameter \"metric\" is required (supported: mom, merchants, utilization)",
 		)
 		return
 	}
-	if metric != "mom" && metric != "merchants" {
+	if metric != "mom" && metric != "merchants" && metric != "utilization" {
 		writeError(
 			writer,
 			http.StatusBadRequest,
-			fmt.Sprintf("unknown metric %q (supported: mom, merchants)", metric),
+			fmt.Sprintf("unknown metric %q (supported: mom, merchants, utilization)", metric),
 		)
 		return
 	}
@@ -285,10 +286,16 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 	if s.now != nil {
 		now = s.now()
 	}
+	_, historyProvided := query["history"]
 	var momPeriod store.TrendMoMPeriod
 	var merchantsPeriod period
+	var utilizationPeriod period
 	switch metric {
 	case "mom":
+		if historyProvided {
+			writeError(writer, http.StatusBadRequest, "history is supported only by metric utilization")
+			return
+		}
 		from, err := queryValue(query, "from")
 		if err != nil {
 			writeError(writer, http.StatusBadRequest, err.Error())
@@ -322,10 +329,64 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 			return
 		}
 	case "merchants":
+		if historyProvided {
+			writeError(writer, http.StatusBadRequest, "history is supported only by metric utilization")
+			return
+		}
 		merchantsPeriod, err = resolvePeriod(query, now)
 		if err != nil {
 			writeError(writer, http.StatusBadRequest, err.Error())
 			return
+		}
+	case "utilization":
+		if _, ok := query["limit"]; ok {
+			writeError(writer, http.StatusBadRequest, "limit/full are unsupported by metric utilization")
+			return
+		}
+		if _, ok := query["full"]; ok {
+			writeError(writer, http.StatusBadRequest, "limit/full are unsupported by metric utilization")
+			return
+		}
+		_, periodProvided := query["period"]
+		_, fromProvided := query["from"]
+		_, toProvided := query["to"]
+		if historyProvided && (periodProvided || fromProvided || toProvided) {
+			writeError(
+				writer,
+				http.StatusBadRequest,
+				"query parameter \"history\" cannot be combined with \"period\", \"from\", or \"to\"",
+			)
+			return
+		}
+		if historyProvided {
+			history, err := queryValue(query, "history")
+			if err != nil {
+				writeError(writer, http.StatusBadRequest, err.Error())
+				return
+			}
+			window, err := store.ResolveNetworthHistoryWindow(history, now)
+			if err != nil {
+				writeError(
+					writer,
+					http.StatusBadRequest,
+					fmt.Sprintf("query parameter %q %v", "history", err),
+				)
+				return
+			}
+			utilizationPeriod = period{from: window.From, to: window.To}
+		} else if periodProvided || fromProvided || toProvided {
+			utilizationPeriod, err = resolvePeriod(query, now)
+			if err != nil {
+				writeError(writer, http.StatusBadRequest, err.Error())
+				return
+			}
+		} else {
+			window, err := store.ResolveNetworthHistoryWindow("30d", now)
+			if err != nil {
+				s.internalError(writer, "resolve default utilization window", err)
+				return
+			}
+			utilizationPeriod = period{from: window.From, to: window.To}
 		}
 	}
 
@@ -334,10 +395,13 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
-	limit, _, err := parseLimit(query)
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, err.Error())
-		return
+	limit := 0
+	if metric != "utilization" {
+		limit, _, err = parseLimit(query)
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	switch metric {
@@ -365,6 +429,16 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 			return
 		}
 		writeDocument(writer, buildTrendMerchantsDocument(report, filter))
+	case "utilization":
+		filter := store.TrendUtilizationFilter{
+			From: utilizationPeriod.from, To: utilizationPeriod.to, Account: account,
+		}
+		report, err := store.ReadTrendUtilization(request.Context(), s.db, filter)
+		if err != nil {
+			s.internalError(writer, "read utilization trends", err)
+			return
+		}
+		writeDocument(writer, buildTrendUtilizationDocument(report))
 	}
 }
 

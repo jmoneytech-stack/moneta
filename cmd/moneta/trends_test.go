@@ -117,6 +117,190 @@ func TestRunTrendsMoMRendersTOONAndJSON(t *testing.T) {
 	}
 }
 
+func seedTrendUtilizationCommandDB(t *testing.T) string {
+	t.Helper()
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "moneta.db")
+	db, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	}()
+	entityID, err := store.EnsureDefaultEntity(ctx, db)
+	if err != nil {
+		t.Fatalf("EnsureDefaultEntity() error: %v", err)
+	}
+	insertCard := func(name, providerID string) int64 {
+		t.Helper()
+		result, err := db.Exec(`
+			INSERT INTO accounts (
+				entity_id, type, name, institution, provider, provider_account_id
+			) VALUES (?, 'credit_card', ?, 'Fake Bank', 'plaid', ?)
+		`, entityID, name, providerID)
+		if err != nil {
+			t.Fatalf("insert card: %v", err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("card id: %v", err)
+		}
+		return id
+	}
+	cardID := insertCard("Credit Example", "util-card")
+	missingLimitID := insertCard("Missing Limit Card", "util-missing")
+	insertSnapshot := func(accountID int64, date string, balance int64, limit any) {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO balance_snapshots (
+				account_id, date, current_cents, limit_cents
+			) VALUES (?, ?, ?, ?)
+		`, accountID, date, balance, limit); err != nil {
+			t.Fatalf("insert utilization snapshot: %v", err)
+		}
+	}
+	insertSnapshot(cardID, "2026-07-01", 340000, int64(1000000))
+	insertSnapshot(cardID, "2026-07-03", -5000, int64(1000000))
+	insertSnapshot(missingLimitID, "2026-07-01", 25000, nil)
+	return databasePath
+}
+
+func TestResolveTrendUtilizationPeriod(t *testing.T) {
+	now := time.Date(2026, time.July, 4, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
+	tests := []struct {
+		name            string
+		history         string
+		historyProvided bool
+		period          string
+		periodProvided  bool
+		from            string
+		fromProvided    bool
+		to              string
+		toProvided      bool
+		want            readPeriod
+		wantErr         bool
+	}{
+		{"default 30 days", "", false, "", false, "", false, "", false, readPeriod{"2026-06-05", "2026-07-04"}, false},
+		{"explicit history", "4d", true, "", false, "", false, "", false, readPeriod{"2026-07-01", "2026-07-04"}, false},
+		{"calendar month", "", false, "2026-07", true, "", false, "", false, readPeriod{"2026-07-01", "2026-07-31"}, false},
+		{"custom dates", "", false, "", false, "2026-06-30", true, "2026-07-02", true, readPeriod{"2026-06-30", "2026-07-02"}, false},
+		{"window conflict", "4d", true, "2026-07", true, "", false, "", false, readPeriod{}, true},
+		{"empty explicit history", "", true, "", false, "", false, "", false, readPeriod{}, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolveTrendUtilizationPeriod(
+				test.history,
+				test.historyProvided,
+				test.period,
+				test.periodProvided,
+				test.from,
+				test.fromProvided,
+				test.to,
+				test.toProvided,
+				now,
+			)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("resolveTrendUtilizationPeriod() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if got != test.want {
+				t.Errorf("resolveTrendUtilizationPeriod() = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRunTrendsUtilizationRendersTOONAndJSON(t *testing.T) {
+	t.Setenv(databasePathEnvironment, seedTrendUtilizationCommandDB(t))
+	now := time.Date(2026, time.July, 4, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
+
+	var stdout, stderr bytes.Buffer
+	code := runTrendsAt(
+		context.Background(),
+		[]string{"--metric", "utilization", "--history", "4d"},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runTrendsAt() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"metric: utilization",
+		"from: 2026-07-01",
+		"to: 2026-07-04",
+		"days: 4",
+		"accounts: 2",
+		"missing_limit_days: 4",
+		"history[4]{date,utilization,debt,limit,accounts}:",
+		"2026-07-01,0.34,3400,10000,1",
+		"2026-07-02,0.34,3400,10000,1",
+		"2026-07-03,0,0,10000,1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("utilization output missing %q:\n%s", want, out)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runTrendsAt(
+		context.Background(),
+		[]string{
+			"--metric", "utilization",
+			"--from", "2026-07-01",
+			"--to", "2026-07-02",
+			"--json",
+		},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runTrendsAt(JSON) code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	jsonOutput := strings.TrimSpace(stdout.String())
+	if !strings.Contains(jsonOutput, `"summary":{"metric":"utilization","from":"2026-07-01","to":"2026-07-02","days":2,"accounts":2,"missing_limit_days":2}`) ||
+		!strings.Contains(jsonOutput, `{"date":"2026-07-02","utilization":0.34,"debt":3400,"limit":10000,"accounts":1}`) {
+		t.Errorf("utilization JSON = %q", jsonOutput)
+	}
+}
+
+func TestRunTrendsUtilizationEmptyDefaultsToThirtyDays(t *testing.T) {
+	t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
+	now := time.Date(2026, time.July, 4, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
+	var stdout, stderr bytes.Buffer
+	code := runTrendsAt(
+		context.Background(),
+		[]string{"--metric", "utilization"},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runTrendsAt() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"from: 2026-06-05",
+		"to: 2026-07-04",
+		"days: 30",
+		"accounts: 0",
+		"missing_limit_days: 0",
+		"history[30]{date,utilization,debt,limit,accounts}:",
+		"2026-06-05,null,0,0,0",
+		"no credit-card accounts",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("empty utilization output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunTrendsMerchantsRendersTOONAndJSON(t *testing.T) {
 	t.Setenv(databasePathEnvironment, seedSpendCommandDB(t, 0))
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
@@ -229,14 +413,20 @@ func TestRunTrendsUsageAndConfigErrors(t *testing.T) {
 		wantText string
 	}{
 		{"missing metric", []string{"trends", "--period", "2026-07"}, filepath.Join(t.TempDir(), "db"), "--metric is required"},
-		{"unknown metric", []string{"trends", "--metric", "utilization"}, filepath.Join(t.TempDir(), "db"), "unknown --metric"},
+		{"unknown metric", []string{"trends", "--metric", "savings"}, filepath.Join(t.TempDir(), "db"), "unknown --metric"},
 		{"mom custom dates rejected", []string{"trends", "--metric", "mom", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "--metric mom requires --period"},
 		{"mom invalid period", []string{"trends", "--metric", "mom", "--period", "2026-13"}, filepath.Join(t.TempDir(), "db"), "valid YYYY-MM"},
 		{"merchants month and dates conflict", []string{"trends", "--metric", "merchants", "--period", "2026-07", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "cannot be combined"},
 		{"merchants requires both dates", []string{"trends", "--metric", "merchants", "--from", "2026-07-01"}, filepath.Join(t.TempDir(), "db"), "must be provided together"},
 		{"merchants invalid custom date", []string{"trends", "--metric", "merchants", "--from", "2026-02-30", "--to", "2026-03-01"}, filepath.Join(t.TempDir(), "db"), "valid YYYY-MM-DD"},
+		{"mom rejects history", []string{"trends", "--metric", "mom", "--history", "30d"}, filepath.Join(t.TempDir(), "db"), "--history is supported only"},
+		{"merchants reject history", []string{"trends", "--metric", "merchants", "--history", "30d"}, filepath.Join(t.TempDir(), "db"), "--history is supported only"},
+		{"utilization window conflict", []string{"trends", "--metric", "utilization", "--history", "30d", "--period", "2026-07"}, filepath.Join(t.TempDir(), "db"), "cannot be combined"},
+		{"utilization invalid history", []string{"trends", "--metric", "utilization", "--history", "0d"}, filepath.Join(t.TempDir(), "db"), "at least 1 day"},
+		{"utilization rejects row limit", []string{"trends", "--metric", "utilization", "--limit", "5"}, filepath.Join(t.TempDir(), "db"), "--limit/--full are unsupported"},
 		{"mom missing database", []string{"trends", "--metric", "mom", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
 		{"merchants missing database", []string{"trends", "--metric", "merchants", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
+		{"utilization missing database", []string{"trends", "--metric", "utilization", "--history", "1d"}, "", "MONETA_DB_PATH or --db is required"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

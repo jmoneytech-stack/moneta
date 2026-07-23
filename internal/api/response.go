@@ -405,6 +405,63 @@ func debtsHint(report store.DebtReport) string {
 	return "run moneta networth to compare total debt with assets"
 }
 
+func buildTrendUtilizationDocument(report store.TrendUtilizationReport) toon.Object {
+	history := toon.Table{
+		Fields: []string{"date", "utilization", "debt", "limit", "accounts"},
+		Rows:   make([][]any, 0, len(report.Points)),
+	}
+	for _, point := range report.Points {
+		utilization := any(nil)
+		if point.HasUtilization {
+			if value := cli.Ratio(point.DebtCents, point.LimitCents, 4); value != nil {
+				utilization = *value
+			}
+		}
+		history.Rows = append(history.Rows, []any{
+			point.Date,
+			utilization,
+			cli.Money(point.DebtCents),
+			cli.Money(point.LimitCents),
+			point.Accounts,
+		})
+	}
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "metric", Value: "utilization"},
+			{Key: "from", Value: report.From},
+			{Key: "to", Value: report.To},
+			{Key: "days", Value: report.Days},
+			{Key: "accounts", Value: report.Accounts},
+			{Key: "missing_limit_days", Value: report.MissingLimitDays},
+		}},
+		{Key: "history", Value: history},
+		{Key: "hint", Value: trendUtilizationHint(report)},
+	}
+}
+
+func trendUtilizationHint(report store.TrendUtilizationReport) string {
+	if report.Accounts == 0 {
+		return "no credit-card accounts match this window; run moneta sync or relax account"
+	}
+	hasUtilization := false
+	for _, point := range report.Points {
+		if point.HasUtilization {
+			hasUtilization = true
+			break
+		}
+	}
+	if !hasUtilization {
+		if report.MissingLimitDays > 0 {
+			return "no usable positive credit limits; run moneta sync to refresh card limits"
+		}
+		return "no credit-card balance snapshots on or before this window; run moneta sync"
+	}
+	if report.MissingLimitDays > 0 {
+		return "some card-days exclude missing or non-positive limits; run moneta sync"
+	}
+	return "run moneta debts to inspect current card balances and limits"
+}
+
 func buildTrendMerchantsDocument(
 	report store.TrendMerchantsReport,
 	filter store.TrendMerchantsFilter,
