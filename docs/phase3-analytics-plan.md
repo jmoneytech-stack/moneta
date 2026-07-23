@@ -198,7 +198,8 @@ TestNetworthHistoryWindowBounds (cmd): --history 90d inclusive/exclusive ends ma
 
 **PR4 status:** `mom` is implemented with calendar-month comparison, category-ID grouping, absolute-delta ordering, CLI TOON/JSON, and authenticated REST.
 **PR5 status:** `merchants` is implemented with spend-style period windows, exact `merchant_norm` grouping, one unknown bucket, spend ordering, CLI TOON/JSON, and authenticated REST.
-PR6 utilization is next; the other metric names remain rejected until their own PRs land.
+**PR6 status:** `utilization` is implemented as a carried-forward daily credit-card portfolio series with a 30-day default, alternative history/month/custom windows, nullable snapshot-limit handling with current-terms fallback, integer-ratio output, and authenticated REST.
+PR7 savings is next; the other metric names remain rejected until their own PRs land.
 
 New `moneta trends` command + `/v1/trends`, following AXI conventions (summary, per-row, truncation, hint, `--json`). Reuses `spend`/`cashflow` exclusion + period helpers. Each `--metric` is its **own PR** on this template:
 
@@ -274,7 +275,7 @@ TestDashboardComposesSections: asserts each section reads from its underlying st
 ## Residual risks / open questions
 
 - **R1 (resolved by PR1).** Plaid documentation and its published Sandbox `/liabilities/get` response confirm positive-when-owed current balances for credit-card and loan accounts. Migration `000003` is therefore a documented no-op that preserves existing negative credits.
-- **R2 (accepted limitation).** D3-2 cannot reclassify historical sentinel-0 optional-money rows to NULL (a stored `0` is ambiguous between "real zero" and "was missing"). Utilization for accounts whose limit predates PR2 stays sentinel-0 until a fresh sync overwrites that account's *current-day* row with NULL; historical days remain sentinel-0. Go-forward only, by design.
+- **R2 (accepted limitation).** D3-2 cannot reclassify historical sentinel-0 optional-money rows to NULL (a stored `0` is ambiguous between "real zero" and "was missing"). Utilization for accounts whose limit predates PR2 stays sentinel-0 until a fresh sync overwrites that account's *current-day* row with NULL; historical days remain sentinel-0. PR6 treats a stored zero as an authoritative non-positive snapshot limit, excludes that card-day, and does not replace it with the current-terms fallback. Go-forward only, by design.
 - **R3 (maintainer input welcome, not blocking).** Two definitional choices: (a) the "fixed vs variable" split (PR8) needs a concrete rule - propose category-kind-based or recurring-linked (recurring is phase 4, so category-kind for now); (b) whether the dashboard is the no-arg `moneta` default or an explicit `moneta dashboard` subcommand. Defaults proposed in-line; confirm at PR4/PR10 time.
 - **R4 (scope boundary).** Without `moneta tag` / D2 (out of scope), all trends reflect provider categorization; a user cannot yet re-bucket a miscategorized merchant, so category trends inherit Plaid's category quality.
 - **R5 (dashboard/phase-4 coupling).** PR10's dashboard has two Phase-4-shaped holes (upcoming bills, anomaly count). Decide whether to ship the dashboard in Phase 3 with documented placeholders or defer it to Phase 4 when those inputs exist. Recommendation: ship with placeholders so the surface is stable, fill in phase 4.

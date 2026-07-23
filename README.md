@@ -14,7 +14,7 @@ The complete Link, transactions, balances, liabilities, encrypted persistence, a
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
-The Phase 3 correctness foundation is complete; compute-on-read analytics now include `moneta networth --history Nd`, `moneta trends --metric mom`, and `moneta trends --metric merchants` without materialized analytics tables.
+The Phase 3 correctness foundation is complete; compute-on-read analytics now include `moneta networth --history Nd` and the `mom`, `merchants`, and `utilization` trend metrics without materialized analytics tables.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -138,9 +138,10 @@ Exit codes: 0 ok, 1 error, 2 usage.
 ```sh
 go run ./cmd/moneta trends --metric mom [--period 2026-07] [--account checking] [--json] [--limit N | --full]
 go run ./cmd/moneta trends --metric merchants [--period 2026-07 | --from 2026-07-01 --to 2026-07-31] [--account checking] [--json] [--limit N | --full]
+go run ./cmd/moneta trends --metric utilization [--history 30d | --period 2026-07 | --from 2026-07-01 --to 2026-07-31] [--account card] [--json]
 ```
 
-`--metric` is required, and the supported values are `mom` and `merchants`; later trend metrics return a usage error until their own PRs land.
+`--metric` is required, and the supported values are `mom`, `merchants`, and `utilization`; later trend metrics return a usage error until their own PRs land.
 For `mom`, the selected calendar month is the current comparison period, with the immediately preceding calendar month as its baseline.
 With no `--period`, `mom` uses the current month in the host's local timezone.
 Custom `--from` / `--to` windows are rejected for `mom` so both sides remain calendar months.
@@ -154,9 +155,23 @@ It groups by exact `merchant_norm`, so multiple raw spellings with the same norm
 An empty normalized key uses one `Unknown Merchant` bucket rather than splitting by raw spelling.
 Rows sort by spend descending, then merchant name and normalized key.
 
-Both metrics exclude transfers, other excluded rows, pending transactions, and inflows.
+The `utilization` metric returns one carried-forward portfolio point for every calendar day.
+It defaults to the 30 local-calendar days ending today, inclusive, and also accepts `--history Nd`, `--period YYYY-MM`, or a complete inclusive `--from` / `--to` pair.
+Those window forms cannot be combined.
+Explicit `--limit` / `--full` are rejected because utilization has no row-limited per-card table.
+
+Utilization includes credit-card accounts only.
+For each card and day, it uses the latest balance snapshot on or before that day.
+A non-NULL snapshot `limit_cents` is authoritative; only a NULL snapshot limit falls back to the current `credit_terms.limit_cents`.
+Cards without a positive usable limit are excluded from that day's portfolio, and utilization is `null` when no card remains.
+A positive balance contributes debt, while a zero or negative credit balance contributes zero debt when the card has a positive limit.
+Portfolio utilization is total debt divided by total limits through integer-only `cli.Ratio(..., 4)` arithmetic.
+The summary `accounts` count covers matched credit cards, each point's `accounts` covers included cards, and `missing_limit_days` counts days when at least one carried card balance lacks a positive usable limit.
+Historical limit values stored as zero before nullable-money PR2 remain indistinguishable from real reported zero and are excluded rather than backfilled or treated as 0% utilization.
+
+The `mom` and `merchants` spend metrics exclude transfers, other excluded rows, pending transactions, and inflows.
 They truncate to 20 rows by default without changing summary totals.
-`--account` uses the same case-insensitive escaped literal substring behavior as `moneta spend`.
+All three metrics use the same case-insensitive escaped literal `--account` substring behavior.
 Exit codes: 0 ok, 1 error, 2 usage.
 
 ## Cash flow
@@ -239,7 +254,7 @@ Read routes:
 | `GET /v1/cashflow` | `period` or `from` + `to`, `account` |
 | `GET /v1/networth` | `as_of` or `history=Nd` |
 | `GET /v1/debts` | none |
-| `GET /v1/trends` | required `metric=mom\|merchants`; `mom`: optional `period`; `merchants`: `period` or `from` + `to`; both: `account`, `limit`, `full` |
+| `GET /v1/trends` | required `metric=mom\|merchants\|utilization`; `mom`: optional `period`; `merchants`: `period` or `from` + `to`, plus `limit`/`full`; `utilization`: `history`, `period`, or `from` + `to`; all: `account` |
 
 Period and date semantics match their CLI counterparts.
 Use `full=true` to disable a route's default 20-row limit.

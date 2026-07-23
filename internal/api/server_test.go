@@ -172,6 +172,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/debts",
 		"/v1/trends?metric=mom&period=2026-07",
 		"/v1/trends?metric=merchants&period=2026-07",
+		"/v1/trends?metric=utilization&history=1d",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
@@ -209,6 +210,8 @@ func TestAPIReadRoutes(t *testing.T) {
 		{"/v1/trends?metric=mom&period=2026-07", []string{`"metric":"mom"`, `"spend_this":25`, `"spend_prev":15`, `"delta":10`, `"category":"Food and Drink"`}},
 		{"/v1/trends?metric=merchants&period=2026-07", []string{`"metric":"merchants"`, `"spend":25`, `"count":2`, `"merchants":2`, `"merchant":"Grocery Mart"`, `"merchant":"Cafe Example"`}},
 		{"/v1/trends?metric=merchants&from=2026-07-01&to=2026-07-31", []string{`"metric":"merchants"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"spend":25`, `"count":2`}},
+		{"/v1/trends?metric=utilization&from=2026-07-22&to=2026-07-22", []string{`"metric":"utilization"`, `"days":1`, `"accounts":1`, `"missing_limit_days":0`, `"date":"2026-07-22"`, `"utilization":0.34`, `"debt":3400`, `"limit":10000`}},
+		{"/v1/trends?metric=utilization&period=2026-07", []string{`"metric":"utilization"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"days":31`, `"utilization":0.34`}},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -228,6 +231,32 @@ func TestAPIReadRoutes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAPITrendUtilizationHistory(t *testing.T) {
+	db := openAPITestDB(t)
+	seedAPITestDB(t, db)
+	fixedNow := time.Date(2026, time.July, 22, 23, 30, 0, 0, time.FixedZone("local", -7*60*60))
+	var logs bytes.Buffer
+	s := &server{
+		db:         db,
+		apiKeyHash: sha256.Sum256([]byte(testAPIKey)),
+		logger:     log.New(&logs, "", 0),
+		now:        func() time.Time { return fixedNow },
+	}
+	handler := s.authenticate(s.recoverPanics(http.HandlerFunc(s.handleTrends)))
+	response := performRequest(handler, "/v1/trends?metric=utilization&history=1d", testAPIKey)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET utilization history = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{
+		`"summary":{"metric":"utilization","from":"2026-07-22","to":"2026-07-22","days":1,"accounts":1,"missing_limit_days":0}`,
+		`"history":[{"date":"2026-07-22","utilization":0.34,"debt":3400,"limit":10000,"accounts":1}]`,
+	} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Errorf("utilization history response missing %q: %s", want, response.Body.String())
+		}
 	}
 }
 
@@ -364,12 +393,17 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
 		{"/v1/debts?unexpected=value", "unknown query parameter"},
 		{"/v1/trends", "metric"},
-		{"/v1/trends?metric=utilization", "unknown metric"},
+		{"/v1/trends?metric=savings", "unknown metric"},
 		{"/v1/trends?metric=mom&period=2026-13", "valid YYYY-MM"},
 		{"/v1/trends?metric=mom&from=2026-07-01&to=2026-07-31", "requires period"},
 		{"/v1/trends?metric=merchants&period=2026-13", "valid YYYY-MM"},
 		{"/v1/trends?metric=merchants&period=2026-07&from=2026-07-01&to=2026-07-31", "cannot be combined"},
 		{"/v1/trends?metric=merchants&from=2026-07-01", "must be provided together"},
+		{"/v1/trends?metric=mom&history=30d", "history is supported only"},
+		{"/v1/trends?metric=merchants&history=30d", "history is supported only"},
+		{"/v1/trends?metric=utilization&history=0d", "at least 1 day"},
+		{"/v1/trends?metric=utilization&history=30d&period=2026-07", "cannot be combined"},
+		{"/v1/trends?metric=utilization&limit=5", "limit/full are unsupported"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
