@@ -117,6 +117,86 @@ func TestRunTrendsMoMRendersTOONAndJSON(t *testing.T) {
 	}
 }
 
+func TestRunTrendsMerchantsRendersTOONAndJSON(t *testing.T) {
+	t.Setenv(databasePathEnvironment, seedSpendCommandDB(t, 0))
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
+
+	var stdout, stderr bytes.Buffer
+	code := runTrendsAt(
+		context.Background(),
+		[]string{"--metric", "merchants", "--limit", "1"},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runTrendsAt() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"metric: merchants",
+		"from: 2026-07-01",
+		"to: 2026-07-31",
+		"spend: 25",
+		"count: 2",
+		"merchants: 2",
+		"by_merchant[1]{merchant,spend,count}:",
+		"Grocery Mart,20,1",
+		"truncated: 1 of 2 merchants shown (--full for all)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("merchant trends output missing %q:\n%s", want, out)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runTrendsAt(
+		context.Background(),
+		[]string{
+			"--metric", "merchants",
+			"--from", "2026-07-01",
+			"--to", "2026-07-31",
+			"--full",
+			"--json",
+		},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runTrendsAt(JSON) code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	jsonOutput := strings.TrimSpace(stdout.String())
+	if !strings.Contains(jsonOutput, `"summary":{"metric":"merchants","from":"2026-07-01","to":"2026-07-31","spend":25,"count":2,"merchants":2}`) ||
+		!strings.Contains(jsonOutput, `{"merchant":"Cafe Example","spend":5,"count":1}`) {
+		t.Errorf("merchant trends JSON = %q", jsonOutput)
+	}
+}
+
+func TestRunTrendsMerchantsEmpty(t *testing.T) {
+	t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{
+		"trends", "--metric", "merchants", "--period", "2026-07",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"spend: 0",
+		"count: 0",
+		"merchants: 0",
+		"by_merchant[0]{merchant,spend,count}:",
+		"no posted spending in this period",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("empty merchant trends output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunTrendsMoMEmpty(t *testing.T) {
 	t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
 	var stdout, stderr bytes.Buffer
@@ -149,10 +229,14 @@ func TestRunTrendsUsageAndConfigErrors(t *testing.T) {
 		wantText string
 	}{
 		{"missing metric", []string{"trends", "--period", "2026-07"}, filepath.Join(t.TempDir(), "db"), "--metric is required"},
-		{"unknown metric", []string{"trends", "--metric", "merchants"}, filepath.Join(t.TempDir(), "db"), "unknown --metric"},
-		{"custom dates rejected", []string{"trends", "--metric", "mom", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "--metric mom requires --period"},
-		{"invalid period", []string{"trends", "--metric", "mom", "--period", "2026-13"}, filepath.Join(t.TempDir(), "db"), "valid YYYY-MM"},
-		{"missing database", []string{"trends", "--metric", "mom", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
+		{"unknown metric", []string{"trends", "--metric", "utilization"}, filepath.Join(t.TempDir(), "db"), "unknown --metric"},
+		{"mom custom dates rejected", []string{"trends", "--metric", "mom", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "--metric mom requires --period"},
+		{"mom invalid period", []string{"trends", "--metric", "mom", "--period", "2026-13"}, filepath.Join(t.TempDir(), "db"), "valid YYYY-MM"},
+		{"merchants month and dates conflict", []string{"trends", "--metric", "merchants", "--period", "2026-07", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "cannot be combined"},
+		{"merchants requires both dates", []string{"trends", "--metric", "merchants", "--from", "2026-07-01"}, filepath.Join(t.TempDir(), "db"), "must be provided together"},
+		{"merchants invalid custom date", []string{"trends", "--metric", "merchants", "--from", "2026-02-30", "--to", "2026-03-01"}, filepath.Join(t.TempDir(), "db"), "valid YYYY-MM-DD"},
+		{"mom missing database", []string{"trends", "--metric", "mom", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
+		{"merchants missing database", []string{"trends", "--metric", "merchants", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

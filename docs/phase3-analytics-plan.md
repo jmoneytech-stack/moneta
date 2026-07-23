@@ -197,7 +197,8 @@ TestNetworthHistoryWindowBounds (cmd): --history 90d inclusive/exclusive ends ma
 ## PR4 - `moneta trends --metric mom`, plus PR5-PR8 (one metric per PR)
 
 **PR4 status:** `mom` is implemented with calendar-month comparison, category-ID grouping, absolute-delta ordering, CLI TOON/JSON, and authenticated REST.
-PR5 merchants is next; the other metric names remain rejected until their own PRs land.
+**PR5 status:** `merchants` is implemented with spend-style period windows, exact `merchant_norm` grouping, one unknown bucket, spend ordering, CLI TOON/JSON, and authenticated REST.
+PR6 utilization is next; the other metric names remain rejected until their own PRs land.
 
 New `moneta trends` command + `/v1/trends`, following AXI conventions (summary, per-row, truncation, hint, `--json`). Reuses `spend`/`cashflow` exclusion + period helpers. Each `--metric` is its **own PR** on this template:
 

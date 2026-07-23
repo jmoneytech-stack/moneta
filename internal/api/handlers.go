@@ -265,49 +265,70 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	if metric == "" {
-		writeError(writer, http.StatusBadRequest, "query parameter \"metric\" is required (supported: mom)")
-		return
-	}
-	if metric != "mom" {
-		writeError(writer, http.StatusBadRequest, fmt.Sprintf("unknown metric %q (supported: mom)", metric))
-		return
-	}
-	from, err := queryValue(query, "from")
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, err.Error())
-		return
-	}
-	to, err := queryValue(query, "to")
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, err.Error())
-		return
-	}
-	if from != "" || to != "" {
 		writeError(
 			writer,
 			http.StatusBadRequest,
-			"metric mom requires period=YYYY-MM or the default current month; from/to are unsupported",
+			"query parameter \"metric\" is required (supported: mom, merchants)",
 		)
 		return
 	}
-	periodValue, err := queryValue(query, "period")
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, err.Error())
+	if metric != "mom" && metric != "merchants" {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			fmt.Sprintf("unknown metric %q (supported: mom, merchants)", metric),
+		)
 		return
 	}
+
 	now := time.Now()
 	if s.now != nil {
 		now = s.now()
 	}
-	selectedPeriod, err := store.ResolveTrendMoMPeriod(periodValue, now)
-	if err != nil {
-		writeError(
-			writer,
-			http.StatusBadRequest,
-			fmt.Sprintf("query parameter %q %v", "period", err),
-		)
-		return
+	var momPeriod store.TrendMoMPeriod
+	var merchantsPeriod period
+	switch metric {
+	case "mom":
+		from, err := queryValue(query, "from")
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		to, err := queryValue(query, "to")
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		if from != "" || to != "" {
+			writeError(
+				writer,
+				http.StatusBadRequest,
+				"metric mom requires period=YYYY-MM or the default current month; from/to are unsupported",
+			)
+			return
+		}
+		periodValue, err := queryValue(query, "period")
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		momPeriod, err = store.ResolveTrendMoMPeriod(periodValue, now)
+		if err != nil {
+			writeError(
+				writer,
+				http.StatusBadRequest,
+				fmt.Sprintf("query parameter %q %v", "period", err),
+			)
+			return
+		}
+	case "merchants":
+		merchantsPeriod, err = resolvePeriod(query, now)
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
+
 	account, err := queryValue(query, "account")
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
@@ -318,22 +339,32 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
-	filter := store.TrendMoMFilter{
-		ThisFrom: selectedPeriod.ThisFrom,
-		ThisTo:   selectedPeriod.ThisTo,
-		PrevFrom: selectedPeriod.PrevFrom,
-		PrevTo:   selectedPeriod.PrevTo,
-		Account:  account,
-	}
 
 	switch metric {
 	case "mom":
+		filter := store.TrendMoMFilter{
+			ThisFrom: momPeriod.ThisFrom,
+			ThisTo:   momPeriod.ThisTo,
+			PrevFrom: momPeriod.PrevFrom,
+			PrevTo:   momPeriod.PrevTo,
+			Account:  account,
+		}
 		report, err := store.ReadTrendMoM(request.Context(), s.db, filter, limit)
 		if err != nil {
 			s.internalError(writer, "read month-over-month trends", err)
 			return
 		}
 		writeDocument(writer, buildTrendMoMDocument(report, filter))
+	case "merchants":
+		filter := store.TrendMerchantsFilter{
+			From: merchantsPeriod.from, To: merchantsPeriod.to, Account: account,
+		}
+		report, err := store.ReadTrendMerchants(request.Context(), s.db, filter, limit)
+		if err != nil {
+			s.internalError(writer, "read merchant trends", err)
+			return
+		}
+		writeDocument(writer, buildTrendMerchantsDocument(report, filter))
 	}
 }
 

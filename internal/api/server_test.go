@@ -134,7 +134,8 @@ func seedAPITestDB(t *testing.T, db *sql.DB) {
 			t.Fatalf("insert transaction: %v", err)
 		}
 	}
-	insertTransaction("2026-07-10", -2500, "Grocery Mart", int64(7), 0, "spend")
+	insertTransaction("2026-07-10", -2000, "Grocery Mart", int64(7), 0, "spend")
+	insertTransaction("2026-07-11", -500, "Cafe Example", int64(7), 0, "cafe")
 	insertTransaction("2026-07-10", 100000, "Employer Example", int64(1), 0, "income")
 	insertTransaction("2026-07-10", -50000, "Transfer Example", int64(2), 1, "transfer")
 	insertTransaction("2026-06-10", -1500, "Previous Grocery", int64(7), 0, "previous-spend")
@@ -170,6 +171,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/networth",
 		"/v1/debts",
 		"/v1/trends?metric=mom&period=2026-07",
+		"/v1/trends?metric=merchants&period=2026-07",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
@@ -199,12 +201,14 @@ func TestAPIReadRoutes(t *testing.T) {
 	}{
 		{"/v1/status", []string{`"items":1`, `"institution":"Fake Bank"`}},
 		{"/v1/accounts?type=checking", []string{`"accounts":1`, `"name":"Everyday Checking"`, `"balance":1200`}},
-		{"/v1/transactions?from=2026-07-01&to=2026-07-31", []string{`"count":3`, `"excluded_count":1`, `"merchant":"Grocery Mart"`}},
+		{"/v1/transactions?from=2026-07-01&to=2026-07-31", []string{`"count":4`, `"excluded_count":1`, `"merchant":"Grocery Mart"`}},
 		{"/v1/spend?period=2026-07", []string{`"total_spend":25`, `"category":"Food and Drink"`, `"merchant":"Grocery Mart"`}},
 		{"/v1/cashflow?period=2026-07", []string{`"inflow":1000`, `"outflow":25`, `"net":975`, `"savings_rate":0.975`}},
 		{"/v1/networth?as_of=2026-07-22", []string{`"assets":1200`, `"liabilities":3400`, `"networth":-2200`, `"type":"credit_card"`}},
 		{"/v1/debts", []string{`"total_debt":3400`, `"name":"Credit Example"`, `"utilization":0.34`, `"apr":0.2299`}},
 		{"/v1/trends?metric=mom&period=2026-07", []string{`"metric":"mom"`, `"spend_this":25`, `"spend_prev":15`, `"delta":10`, `"category":"Food and Drink"`}},
+		{"/v1/trends?metric=merchants&period=2026-07", []string{`"metric":"merchants"`, `"spend":25`, `"count":2`, `"merchants":2`, `"merchant":"Grocery Mart"`, `"merchant":"Cafe Example"`}},
+		{"/v1/trends?metric=merchants&from=2026-07-01&to=2026-07-31", []string{`"metric":"merchants"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"spend":25`, `"count":2`}},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -360,9 +364,12 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
 		{"/v1/debts?unexpected=value", "unknown query parameter"},
 		{"/v1/trends", "metric"},
-		{"/v1/trends?metric=merchants", "unknown metric"},
+		{"/v1/trends?metric=utilization", "unknown metric"},
 		{"/v1/trends?metric=mom&period=2026-13", "valid YYYY-MM"},
 		{"/v1/trends?metric=mom&from=2026-07-01&to=2026-07-31", "requires period"},
+		{"/v1/trends?metric=merchants&period=2026-13", "valid YYYY-MM"},
+		{"/v1/trends?metric=merchants&period=2026-07&from=2026-07-01&to=2026-07-31", "cannot be combined"},
+		{"/v1/trends?metric=merchants&from=2026-07-01", "must be provided together"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
