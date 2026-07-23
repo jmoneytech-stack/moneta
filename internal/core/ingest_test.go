@@ -278,15 +278,15 @@ func TestApplySyncUpsertsBalancesLiabilitiesAndTransferCategory(t *testing.T) {
 			AccountRef:     "card-1",
 			Date:           "2026-07-10",
 			CurrentCents:   32100,
-			AvailableCents: 67900,
-			LimitCents:     100000,
+			AvailableCents: centsPointer(67900),
+			LimitCents:     centsPointer(100000),
 		}},
 		Liabilities: []canon.Liability{{
 			AccountRef:         "card-1",
 			APR:                19.99,
-			LimitCents:         100000,
-			MinPaymentCents:    2500,
-			LastStatementCents: 30000,
+			LimitCents:         centsPointer(100000),
+			MinPaymentCents:    centsPointer(2500),
+			LastStatementCents: centsPointer(30000),
 			StatementDay:       5,
 			DueDay:             28,
 		}},
@@ -358,6 +358,74 @@ func TestApplySyncUpsertsBalancesLiabilitiesAndTransferCategory(t *testing.T) {
 	}
 }
 
+func TestApplySyncWritesNullForMissingOptionalMoney(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+	ctx := context.Background()
+
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+		Accounts: []canon.Account{
+			{
+				ProviderAccountID: "card-1",
+				Name:              "Test Card",
+				Type:              canon.AccountTypeCreditCard,
+				Currency:          "USD",
+			},
+			{
+				ProviderAccountID: "loan-1",
+				Name:              "Test Loan",
+				Type:              canon.AccountTypeLoan,
+				Currency:          "USD",
+			},
+		},
+		Balances: []canon.Balance{{
+			AccountRef:   "card-1",
+			Date:         "2026-07-10",
+			CurrentCents: 32100,
+		}},
+		Liabilities: []canon.Liability{
+			{AccountRef: "card-1", APR: 19.99},
+			{AccountRef: "loan-1", APR: 4.5},
+		},
+		NextCursor: "cursor-1",
+	}); err != nil {
+		t.Fatalf("ApplySync() error: %v", err)
+	}
+
+	var availableNull, balanceLimitNull int
+	if err := db.QueryRow(`
+		SELECT available_cents IS NULL, limit_cents IS NULL
+		FROM balance_snapshots
+	`).Scan(&availableNull, &balanceLimitNull); err != nil {
+		t.Fatalf("read balance nullability: %v", err)
+	}
+	if availableNull != 1 || balanceLimitNull != 1 {
+		t.Errorf("balance NULL flags = %d/%d, want 1/1", availableNull, balanceLimitNull)
+	}
+
+	var creditLimitNull, creditMinimumNull, statementNull int
+	if err := db.QueryRow(`
+		SELECT limit_cents IS NULL, min_payment_cents IS NULL,
+		       last_statement_cents IS NULL
+		FROM credit_terms
+	`).Scan(&creditLimitNull, &creditMinimumNull, &statementNull); err != nil {
+		t.Fatalf("read credit terms nullability: %v", err)
+	}
+	if creditLimitNull != 1 || creditMinimumNull != 1 || statementNull != 1 {
+		t.Errorf("credit terms NULL flags = %d/%d/%d, want 1/1/1",
+			creditLimitNull, creditMinimumNull, statementNull)
+	}
+
+	var loanMinimumNull int
+	if err := db.QueryRow(`
+		SELECT min_payment_cents IS NULL FROM loan_terms
+	`).Scan(&loanMinimumNull); err != nil {
+		t.Fatalf("read loan terms nullability: %v", err)
+	}
+	if loanMinimumNull != 1 {
+		t.Errorf("loan minimum NULL flag = %d, want 1", loanMinimumNull)
+	}
+}
+
 func TestApplySyncSkipsLiabilityForUnsupportedAccountType(t *testing.T) {
 	db, ingestor, target := newTestIngestor(t, "plaid")
 	ctx := context.Background()
@@ -372,7 +440,7 @@ func TestApplySyncSkipsLiabilityForUnsupportedAccountType(t *testing.T) {
 		Liabilities: []canon.Liability{{
 			AccountRef:      "checking-1",
 			APR:             4.5,
-			MinPaymentCents: 2500,
+			MinPaymentCents: centsPointer(2500),
 		}},
 		NextCursor: "cursor-1",
 	})
@@ -700,7 +768,7 @@ func TestApplySyncClearsOrphanedTermsWhenLiabilityTypeChanges(t *testing.T) {
 		Liabilities: []canon.Liability{{
 			AccountRef:      "card-1",
 			APR:             19.99,
-			MinPaymentCents: 2500,
+			MinPaymentCents: centsPointer(2500),
 		}},
 		NextCursor: "cursor-1",
 	}); err != nil {
@@ -824,6 +892,10 @@ func newTestIngestor(t *testing.T, provider string) (*sql.DB, *Ingestor, SyncTar
 		DefaultEntityID: entityID,
 		ExpectedCursor:  "",
 	}
+}
+
+func centsPointer(value int64) *int64 {
+	return &value
 }
 
 func assertCursor(t *testing.T, db *sql.DB, providerItemID int64, want string) {

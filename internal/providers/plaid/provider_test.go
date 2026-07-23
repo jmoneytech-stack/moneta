@@ -135,13 +135,14 @@ func TestProviderSyncPaginatesAndNormalizesCompleteBatch(t *testing.T) {
 		t.Fatalf("balance count = %d, want 2", len(batch.Balances))
 	}
 	if batch.Balances[0].CurrentCents != 123456 ||
-		batch.Balances[0].AvailableCents != 120000 {
+		!reflect.DeepEqual(batch.Balances[0].AvailableCents, centsPointer(120000)) {
 		t.Errorf("checking balance = %#v", batch.Balances[0])
 	}
 	if batch.Balances[0].Date != "2026-07-17" {
 		t.Errorf("balance date = %q, want 2026-07-17", batch.Balances[0].Date)
 	}
-	if batch.Balances[1].CurrentCents != 10005 || batch.Balances[1].LimitCents != 100000 {
+	if batch.Balances[1].CurrentCents != 10005 ||
+		!reflect.DeepEqual(batch.Balances[1].LimitCents, centsPointer(100000)) {
 		t.Errorf("card balance = %#v", batch.Balances[1])
 	}
 
@@ -166,8 +167,10 @@ func TestProviderSyncPaginatesAndNormalizesCompleteBatch(t *testing.T) {
 		t.Fatalf("liability count = %d, want 1", len(batch.Liabilities))
 	}
 	liability := batch.Liabilities[0]
-	if liability.APR != 19.99 || liability.LimitCents != 100000 ||
-		liability.MinPaymentCents != 101 || liability.LastStatementCents != 435 {
+	if liability.APR != 19.99 ||
+		!reflect.DeepEqual(liability.LimitCents, centsPointer(100000)) ||
+		!reflect.DeepEqual(liability.MinPaymentCents, centsPointer(101)) ||
+		!reflect.DeepEqual(liability.LastStatementCents, centsPointer(435)) {
 		t.Errorf("credit liability = %#v", liability)
 	}
 	if liability.StatementDay != 5 || liability.DueDay != 28 {
@@ -371,6 +374,69 @@ func TestProviderBalancesRequireCurrentAmount(t *testing.T) {
 				t.Errorf("current cents = %d, want 10000", balances[0].CurrentCents)
 			}
 		})
+	}
+}
+
+func TestProviderOptionalMoneyPreservesMissingAndZero(t *testing.T) {
+	current := 100.00
+	zero := 0.00
+	provider := mustTestProvider(t, &fakeGateway{})
+	_, balances, accounts, skipped := provider.normalizeAccounts([]rawAccount{
+		{
+			ID:       "card-missing",
+			Name:     "Missing Terms Card",
+			Type:     "credit",
+			Subtype:  "credit card",
+			Currency: "USD",
+			Current:  &current,
+		},
+		{
+			ID:        "card-zero",
+			Name:      "Zero Terms Card",
+			Type:      "credit",
+			Subtype:   "credit card",
+			Currency:  "USD",
+			Current:   &current,
+			Available: &zero,
+			Limit:     &zero,
+		},
+	})
+	if len(skipped) != 0 || len(balances) != 2 {
+		t.Fatalf("normalizeAccounts() = %d balances / %#v skipped", len(balances), skipped)
+	}
+	zeroCents := int64(0)
+	if !reflect.DeepEqual(balances[0].AvailableCents, (*int64)(nil)) ||
+		!reflect.DeepEqual(balances[0].LimitCents, (*int64)(nil)) {
+		t.Errorf("missing balance fields = %#v, want nil pointers", balances[0])
+	}
+	if !reflect.DeepEqual(balances[1].AvailableCents, &zeroCents) ||
+		!reflect.DeepEqual(balances[1].LimitCents, &zeroCents) {
+		t.Errorf("zero balance fields = %#v, want pointers to zero", balances[1])
+	}
+
+	liabilities, liabilitySkipped := normalizeLiabilities(rawLiabilities{
+		Credit: []rawCreditLiability{
+			{AccountID: "card-missing"},
+			{
+				AccountID:            "card-zero",
+				MinimumPayment:       &zero,
+				LastStatementBalance: &zero,
+			},
+		},
+	}, accounts)
+	if len(liabilitySkipped) != 0 || len(liabilities) != 2 {
+		t.Fatalf("normalizeLiabilities() = %d liabilities / %#v skipped",
+			len(liabilities), liabilitySkipped)
+	}
+	if !reflect.DeepEqual(liabilities[0].LimitCents, (*int64)(nil)) ||
+		!reflect.DeepEqual(liabilities[0].MinPaymentCents, (*int64)(nil)) ||
+		!reflect.DeepEqual(liabilities[0].LastStatementCents, (*int64)(nil)) {
+		t.Errorf("missing liability fields = %#v, want nil pointers", liabilities[0])
+	}
+	if !reflect.DeepEqual(liabilities[1].LimitCents, &zeroCents) ||
+		!reflect.DeepEqual(liabilities[1].MinPaymentCents, &zeroCents) ||
+		!reflect.DeepEqual(liabilities[1].LastStatementCents, &zeroCents) {
+		t.Errorf("zero liability fields = %#v, want pointers to zero", liabilities[1])
 	}
 }
 
@@ -696,12 +762,16 @@ func TestProviderSyncNormalizesStudentAndMortgageLiabilities(t *testing.T) {
 		t.Fatalf("liability count = %d, want 2", len(batch.Liabilities))
 	}
 	student := batch.Liabilities[0]
-	if student.APR != 4.35 || student.MinPaymentCents != 15001 ||
-		student.LastStatementCents != 100001 || student.DueDay != 20 {
+	if student.APR != 4.35 ||
+		!reflect.DeepEqual(student.MinPaymentCents, centsPointer(15001)) ||
+		!reflect.DeepEqual(student.LastStatementCents, centsPointer(100001)) ||
+		student.DueDay != 20 {
 		t.Errorf("student liability = %#v", student)
 	}
 	mortgage := batch.Liabilities[1]
-	if mortgage.APR != 6.125 || mortgage.MinPaymentCents != 250001 || mortgage.DueDay != 15 {
+	if mortgage.APR != 6.125 ||
+		!reflect.DeepEqual(mortgage.MinPaymentCents, centsPointer(250001)) ||
+		mortgage.DueDay != 15 {
 		t.Errorf("mortgage liability = %#v", mortgage)
 	}
 }
@@ -1202,6 +1272,10 @@ func (g *fakeGateway) liabilities(context.Context, string) (rawLiabilities, erro
 
 func (g *fakeGateway) item(context.Context, string) (rawItem, error) {
 	return g.itemResult, g.itemError
+}
+
+func centsPointer(value int64) *int64 {
+	return &value
 }
 
 func mustTestProvider(t *testing.T, gateway gateway) *Provider {

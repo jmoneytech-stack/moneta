@@ -48,24 +48,26 @@ type Transaction struct {
 	Currency       string
 }
 
-// Balance is an account balance observed on a given date. Every monetary value
-// is represented in integer cents.
+// Balance is an account balance observed on a given date. CurrentCents is
+// required. Optional monetary values are nil when the provider omits them;
+// every present value is represented in integer cents.
 type Balance struct {
 	AccountRef     string
 	Date           Date
 	CurrentCents   int64
-	AvailableCents int64
-	LimitCents     int64
+	AvailableCents *int64
+	LimitCents     *int64
 }
 
 // Liability contains provider-supplied credit or loan terms. APR is a rate,
-// not a monetary value. Every monetary value is represented in integer cents.
+// not a monetary value. Optional monetary values are nil when the provider
+// omits them; every present value is represented in integer cents.
 type Liability struct {
 	AccountRef         string
 	APR                float64
-	LimitCents         int64
-	MinPaymentCents    int64
-	LastStatementCents int64
+	LimitCents         *int64
+	MinPaymentCents    *int64
+	LastStatementCents *int64
 	StatementDay       int
 	DueDay             int
 }

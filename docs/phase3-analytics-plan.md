@@ -47,11 +47,11 @@ The interim "abs = debt magnitude" behavior documented in `docs/phase2-polish-pr
 
 ### D3-2. Optional money is nullable, never sentinel-zero.
 
-`optionalMoneyToCents(nil)` returns `(0, nil)` (`internal/providers/plaid/normalize.go:301-303`), and `canon.Balance`/`canon.Liability` carry `int64`, so ingest writes `0` where Plaid omitted a value - conflating "no limit reported" with "a zero limit."
+Before PR2, `optionalMoneyToCents(nil)` returned `(0, nil)` and `canon.Balance`/`canon.Liability` carried bare `int64`, so ingest wrote `0` where Plaid omitted a value - conflating "not reported" with "a reported zero."
 The SQL columns are **already nullable** (`balance_snapshots.available_cents`, `balance_snapshots.limit_cents`, `credit_terms.limit_cents` are `INTEGER` without `NOT NULL`), and the debts reader **already** scans them as `sql.NullInt64` (`internal/store/debts.go:111`) - so the read layer is NULL-ready and the write layer is the gap.
 
 **Decided:** optional money becomes nullable end-to-end (`*int64` in `canon`, real SQL `NULL` on write).
-Prioritize the fields that feed honest utilization: `limit_cents` and `available_cents` on `balance_snapshots`, and `limit_cents` on `credit_terms`.
+PR2 applies this consistently to `available_cents` and `limit_cents` on `balance_snapshots`, plus liability limit, minimum-payment, and last-statement money; a present `0.00` remains a non-nil pointer to zero.
 The binding money rule at `moneta-plan.md:268` is amended to add: "optional money is nullable (`*int64` / SQL `NULL`), never sentinel-zero."
 
 ### D3-3. Analytics are compute-on-read; no precompute tables in this stack.
@@ -71,7 +71,7 @@ The `moneta-plan.md:251` header ("Analytics (precomputed at sync ...)") and the 
 
 | Area | Change | PR |
 |---|---|---|
-| `internal/canon/types.go` | `Balance.AvailableCents`, `Balance.LimitCents` → `*int64`; `Liability.LimitCents` → `*int64` (min-payment / last-statement may follow later, not required here) | PR2 |
+| `internal/canon/types.go` | `Balance.AvailableCents`, `Balance.LimitCents`, and liability limit / minimum-payment / last-statement money → `*int64` | PR2 |
 | `internal/providers/plaid/normalize.go` | `optionalMoneyToCents` returns `(*int64, error)` (nil when the Plaid field is nil); liability-balance normalization to positive-when-owed | PR1 (sign), PR2 (nullable) |
 | `internal/core/ingest.go` | balance + liability upserts bind `NULL` for nil optional money (`:651-666`, liability terms ~`:700-715`) | PR2 |
 | `internal/store/networth.go`, `internal/store/debts.go` | remove the `amount < 0 { amount = -amount }` blocks (`networth.go:150-151`, `debts.go:101-102`); keep the `MinInt64` overflow guards | PR1 |
@@ -147,9 +147,9 @@ TestMigration000003PreservesGenuineCredits (or IsNoOp): existing negative rows a
 **Anchors:** `internal/canon/types.go:53-71`, `internal/providers/plaid/normalize.go:300-305`, `internal/core/ingest.go:651-666`, `internal/store/debts.go:111`.
 
 ### Steps
-1. `canon.Balance.AvailableCents`/`LimitCents` and `canon.Liability.LimitCents` → `*int64`.
+1. `canon.Balance.AvailableCents`/`LimitCents` and all optional liability money fields (`LimitCents`, `MinPaymentCents`, `LastStatementCents`) → `*int64`.
 2. `optionalMoneyToCents` returns `(*int64, error)` - `nil` when the Plaid field is nil, else a pointer to the cents value.
-3. Ingest binds `NULL` (Go `nil`) for those columns instead of `0`.
+3. Ingest binds `NULL` (Go `nil`) for those columns instead of `0`; a non-nil pointer to zero binds SQL `0`.
 4. Readers: `networth`/`debts` treat a NULL limit/available as absent (the debts reader's `sql.NullInt64` path at `:111` already does this - verify no reader assumes non-null). `cli.Ratio` already returns nil for a non-positive/absent denominator, so utilization stays blank for a missing limit - now for the right reason.
 5. Amend `moneta-plan.md:268` with the nullable clause.
 
@@ -166,7 +166,7 @@ TestUtilizationBlankForNullLimitNotZero: an account with a NULL limit shows no u
 - No historical backfill (sentinel-0 is unrecoverable - see R2); go-forward only.
 
 ### Out of scope
-- `min_payment_cents` / `last_statement_cents` nullability (optional later follow-up, not analytics-blocking). The sign convention (PR1).
+- The sign convention (PR1), historical sentinel-zero backfill, and any additional liability-kind enrichment.
 
 ---
 

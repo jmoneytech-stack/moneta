@@ -171,6 +171,7 @@ Debts lists every credit-card and loan account using its latest balance snapshot
 A positive balance is owed debt, while a negative balance is a genuine credit owed to the user.
 An account without a snapshot remains in the table with `balance: null`, increments `missing_balance`, and contributes nothing to `total_debt`.
 Credit-card limit, APR, and due day and loan APR are best-effort values from the existing terms tables; unavailable fields are `null`.
+Provider-omitted optional money remains SQL `NULL`, while an explicitly reported `0.00` remains distinguishable as zero.
 Utilization is `balance / limit`, truncated toward zero to four decimal places, and is `null` when balance is missing or limit is absent, zero, or negative.
 Plaid APR enters SQLite as percentage points; output converts it to a decimal fraction rounded to the nearest basis point, so stored `22.99` renders as `0.2299`.
 Money remains integer cents internally and renders through `cli.Money`.
