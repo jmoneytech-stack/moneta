@@ -405,6 +405,56 @@ func debtsHint(report store.DebtReport) string {
 	return "run moneta networth to compare total debt with assets"
 }
 
+func buildTrendMoMDocument(report store.TrendMoMReport, filter store.TrendMoMFilter) toon.Object {
+	categories := toon.Table{
+		Fields: []string{"category", "spend_this", "spend_prev", "delta"},
+		Rows:   make([][]any, 0, len(report.Categories)),
+	}
+	for _, category := range report.Categories {
+		categories.Rows = append(categories.Rows, []any{
+			category.Name,
+			cli.Money(category.SpendThisCents),
+			cli.Money(category.SpendPrevCents),
+			cli.Money(category.DeltaCents),
+		})
+	}
+	document := toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "metric", Value: "mom"},
+			{Key: "this_from", Value: filter.ThisFrom},
+			{Key: "this_to", Value: filter.ThisTo},
+			{Key: "prev_from", Value: filter.PrevFrom},
+			{Key: "prev_to", Value: filter.PrevTo},
+			{Key: "spend_this", Value: cli.Money(report.SpendThisCents)},
+			{Key: "spend_prev", Value: cli.Money(report.SpendPrevCents)},
+			{Key: "delta", Value: cli.Money(report.DeltaCents)},
+			{Key: "categories", Value: report.CategoryTotal},
+		}},
+		{Key: "by_category", Value: categories},
+	}
+	if len(report.Categories) < report.CategoryTotal {
+		document = append(document, toon.Field{
+			Key: "truncated",
+			Value: fmt.Sprintf(
+				"%d of %d categories shown (use full=true for all)",
+				len(report.Categories),
+				report.CategoryTotal,
+			),
+		})
+	}
+	return append(document, toon.Field{Key: "hint", Value: trendMoMHint(report, filter)})
+}
+
+func trendMoMHint(report store.TrendMoMReport, filter store.TrendMoMFilter) string {
+	if report.CategoryTotal == 0 {
+		return "no posted spending in either month; choose another period or run moneta sync"
+	}
+	return fmt.Sprintf(
+		"run moneta spend --period %s to inspect current-month spending",
+		filter.ThisFrom[:7],
+	)
+}
+
 func buildNetworthHistoryDocument(report store.NetworthHistoryReport) toon.Object {
 	history := toon.Table{
 		Fields: []string{"date", "assets", "liabilities", "networth"},

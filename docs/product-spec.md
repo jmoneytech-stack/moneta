@@ -20,8 +20,8 @@ Production `moneta sync` ships on the library path (PR #2).
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` ship on the shared TOON/JSON output path (`internal/toon`, `internal/cli`), with the same reads mirrored as authenticated JSON by loopback-only-default `moneta serve`.
 The post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete: confirmed ingest wedge paths closed, uniform exit codes, transfer-aware `tx` aggregates, durable skip and reauth state, TOON hardening.
 Phase 2 is complete, including GitHub Actions build, vet, test, CGO-free test, and race-test gates.
-Phase 3's liability-sign and nullable-money foundation is complete, and compute-on-read daily net-worth history ships through CLI TOON/JSON and authenticated REST.
-Trends and later Phase 3 features start only when explicitly prioritized.
+Phase 3's liability-sign and nullable-money foundation is complete, and compute-on-read daily net-worth history and month-over-month category spend trends ship through CLI TOON/JSON and authenticated REST.
+PR5 merchant trends and later Phase 3 features start only when explicitly prioritized.
 
 ## Non-Goals
 

@@ -14,7 +14,7 @@ The complete Link, transactions, balances, liabilities, encrypted persistence, a
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
-The Phase 3 correctness foundation is complete, and `moneta networth --history Nd` adds compute-on-read daily net-worth history without a materialized analytics table.
+The Phase 3 correctness foundation is complete; compute-on-read analytics now include `moneta networth --history Nd` and `moneta trends --metric mom` without materialized analytics tables.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -133,6 +133,24 @@ Source outflows remain negative cents in SQLite; the spend command deliberately 
 Category and merchant tables are ordered by spend, use an `Uncategorized` bucket when needed, and show 20 groups each by default with independent truncation lines.
 Exit codes: 0 ok, 1 error, 2 usage.
 
+## Month-over-month trends
+
+```sh
+go run ./cmd/moneta trends --metric mom [--period 2026-07] [--account checking] [--json] [--limit N | --full]
+```
+
+`--metric` is required, and PR4 supports only `mom`; later trend metrics return a usage error until their own PRs land.
+The selected calendar month is the current comparison period, with the immediately preceding calendar month as its baseline.
+With no `--period`, the command uses the current month in the host's local timezone.
+Custom `--from` / `--to` windows are rejected for `mom` so both sides remain calendar months.
+
+For every category present in either month, `spend_this` and `spend_prev` are positive magnitudes of posted, non-excluded outflows, and signed `delta` is `spend_this - spend_prev`.
+Transfers, other excluded rows, pending transactions, and inflows do not contribute.
+Categories retain `category_id` identity even when display names match; uncategorized rows share the `Uncategorized` bucket.
+Rows sort by absolute delta descending, then category name and ID, and truncate to 20 by default without changing summary totals.
+`--account` uses the same case-insensitive escaped literal substring behavior as `moneta spend`.
+Exit codes: 0 ok, 1 error, 2 usage.
+
 ## Cash flow
 
 ```sh
@@ -213,6 +231,7 @@ Read routes:
 | `GET /v1/cashflow` | `period` or `from` + `to`, `account` |
 | `GET /v1/networth` | `as_of` or `history=Nd` |
 | `GET /v1/debts` | none |
+| `GET /v1/trends` | required `metric=mom`; optional `period`, `account`, `limit`, `full` |
 
 Period and date semantics match their CLI counterparts.
 Use `full=true` to disable a route's default 20-row limit.
