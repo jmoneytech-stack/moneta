@@ -148,6 +148,121 @@ func TestReadTrendMoMComputesCategoryDeltasAndExcludesNonSpend(t *testing.T) {
 	}
 }
 
+func TestReadTrendMerchantsGroupsByNormalizedMerchantAndExcludesNonSpend(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID := insertEntity(t, db, "personal", "Personal")
+	accountID := insertAccountFull(t, db, entityID, "Everyday Checking", "checking", "acct-merchants")
+	insert := func(
+		date string,
+		amount int64,
+		raw string,
+		normalized string,
+		status string,
+		excluded int,
+		hash string,
+	) {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO transactions (
+				account_id, entity_id, date, amount_cents, merchant_raw,
+				merchant_norm, status, excluded, dedup_hash
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, accountID, entityID, date, amount, raw, normalized, status, excluded, hash); err != nil {
+			t.Fatalf("insert transaction %q: %v", hash, err)
+		}
+	}
+
+	insert("2026-07-02", -4000, "GROCERY MART #1", "Grocery Mart", "posted", 0, "grocery-1")
+	insert("2026-07-03", -1500, "Grocery Mart 002", "Grocery Mart", "posted", 0, "grocery-2")
+	insert("2026-07-04", -2500, "CAFE EXAMPLE", "Cafe Example", "posted", 0, "cafe")
+	insert("2026-07-05", -1000, "Mystery Raw A", "", "posted", 0, "unknown-1")
+	insert("2026-07-06", -500, "Mystery Raw B", "", "posted", 0, "unknown-2")
+
+	// These rows must not affect totals or merchant groups.
+	insert("2026-07-07", -900000, "Transfer Example", "Transfer Example", "posted", 1, "excluded")
+	insert("2026-07-08", -800000, "Pending Shop", "Pending Shop", "pending", 0, "pending")
+	insert("2026-07-09", 700000, "Income Example", "Income Example", "posted", 0, "income")
+	insert("2026-06-30", -600000, "Outside Shop", "Outside Shop", "posted", 0, "outside")
+
+	filter := TrendMerchantsFilter{From: "2026-07-01", To: "2026-07-31"}
+	report, err := ReadTrendMerchants(ctx, db, filter, 0)
+	if err != nil {
+		t.Fatalf("ReadTrendMerchants() error: %v", err)
+	}
+	if report.SpendCents != 9500 || report.Count != 5 || report.MerchantTotal != 3 {
+		t.Errorf("summary = spend %d / count %d / merchants %d, want 9500/5/3",
+			report.SpendCents, report.Count, report.MerchantTotal)
+	}
+	want := []TrendMerchant{
+		{Name: "Grocery Mart", SpendCents: 5500, Count: 2},
+		{Name: "Cafe Example", SpendCents: 2500, Count: 1},
+		{Name: "Unknown Merchant", SpendCents: 1500, Count: 2},
+	}
+	if len(report.Merchants) != len(want) {
+		t.Fatalf("merchants = %d, want %d: %+v", len(report.Merchants), len(want), report.Merchants)
+	}
+	for index := range want {
+		if report.Merchants[index] != want[index] {
+			t.Errorf("merchants[%d] = %+v, want %+v", index, report.Merchants[index], want[index])
+		}
+	}
+
+	limited, err := ReadTrendMerchants(ctx, db, filter, 2)
+	if err != nil {
+		t.Fatalf("ReadTrendMerchants(limit) error: %v", err)
+	}
+	if len(limited.Merchants) != 2 || limited.MerchantTotal != 3 ||
+		limited.SpendCents != 9500 || limited.Count != 5 {
+		t.Errorf("limited report = %+v", limited)
+	}
+}
+
+func TestReadTrendMerchantsEmptyValidatesAndFiltersAccountsLiterally(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	valid := TrendMerchantsFilter{From: "2026-07-01", To: "2026-07-31"}
+	report, err := ReadTrendMerchants(ctx, db, valid, 20)
+	if err != nil {
+		t.Fatalf("ReadTrendMerchants(empty) error: %v", err)
+	}
+	if report.SpendCents != 0 || report.Count != 0 ||
+		report.MerchantTotal != 0 || len(report.Merchants) != 0 {
+		t.Errorf("empty report = %+v", report)
+	}
+
+	entityID := insertEntity(t, db, "personal", "Personal")
+	underscoreID := insertAccountFull(t, db, entityID, "Percent_Account", "checking", "acct-merchant-1")
+	otherID := insertAccountFull(t, db, entityID, "PercentXAccount", "checking", "acct-merchant-2")
+	insertSpendTransaction(t, db, underscoreID, entityID,
+		"2026-07-10", -100, "Literal Match", nil, "posted", 0, "merchant-literal")
+	insertSpendTransaction(t, db, otherID, entityID,
+		"2026-07-10", -200, "Wildcard Match", nil, "posted", 0, "merchant-wildcard")
+
+	report, err = ReadTrendMerchants(ctx, db, TrendMerchantsFilter{
+		From: "2026-07-01", To: "2026-07-31", Account: "_",
+	}, 20)
+	if err != nil {
+		t.Fatalf("ReadTrendMerchants(account) error: %v", err)
+	}
+	if report.SpendCents != 100 || report.Count != 1 || report.MerchantTotal != 1 {
+		t.Errorf("filtered report = %+v, want only literal underscore account", report)
+	}
+
+	if _, err := ReadTrendMerchants(ctx, nil, valid, 20); err == nil {
+		t.Error("ReadTrendMerchants(nil db) succeeded, want error")
+	}
+	for _, filter := range []TrendMerchantsFilter{
+		{},
+		{From: "bad", To: "2026-07-31"},
+		{From: "2026-08-01", To: "2026-07-31"},
+	} {
+		if _, err := ReadTrendMerchants(ctx, db, filter, 20); err == nil {
+			t.Errorf("ReadTrendMerchants(%+v) succeeded, want error", filter)
+		}
+	}
+}
+
 func TestReadTrendMoMAccountFilterIsLiteral(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

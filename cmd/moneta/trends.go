@@ -14,11 +14,14 @@ import (
 	"github.com/jmoneytech-stack/moneta/internal/toon"
 )
 
-const trendMetricMoM = "mom"
+const (
+	trendMetricMoM       = "mom"
+	trendMetricMerchants = "merchants"
+	trendMetricsHelp     = "mom, merchants"
+)
 
-// runTrends dispatches one compute-on-read trend metric. PR4 supports only
-// month-over-month category spend; later metrics extend the dispatch without
-// changing the command's output and error boundaries.
+// runTrends dispatches one compute-on-read trend metric. Each metric owns its
+// period validation while sharing the command's output and error boundaries.
 func runTrends(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return runTrendsAt(ctx, args, stdout, stderr, time.Now())
 }
@@ -37,21 +40,21 @@ func runTrendsAt(
 		os.Getenv(databasePathEnvironment),
 		"SQLite database path (default MONETA_DB_PATH)",
 	)
-	metric := flags.String("metric", "", "trend metric (required; supported: mom)")
+	metric := flags.String("metric", "", "trend metric (required; supported: "+trendMetricsHelp+")")
 	periodValue := flags.String(
 		"period",
 		"",
-		"current comparison month in YYYY-MM form (default: current local month)",
+		"calendar month in YYYY-MM form (default: current local month)",
 	)
-	from := flags.String("from", "", "custom start date (not supported by metric mom)")
-	to := flags.String("to", "", "custom end date (not supported by metric mom)")
+	from := flags.String("from", "", "custom start date for supported metrics, YYYY-MM-DD")
+	to := flags.String("to", "", "custom end date for supported metrics, YYYY-MM-DD")
 	account := flags.String(
 		"account",
 		"",
 		"filter to accounts whose name contains this literal substring (case-insensitive)",
 	)
-	limit := flags.Int("limit", statusDefaultLimit, "maximum category rows to show")
-	full := flags.Bool("full", false, "show every category row, ignoring --limit")
+	limit := flags.Int("limit", statusDefaultLimit, "maximum result rows to show")
+	full := flags.Bool("full", false, "show every result row, ignoring --limit")
 	asJSON := flags.Bool("json", false, "emit JSON instead of TOON")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -68,25 +71,53 @@ func runTrendsAt(
 		return 2
 	}
 	if *metric == "" {
-		fmt.Fprintln(stderr, "error: --metric is required (supported: mom)")
+		fmt.Fprintf(stderr, "error: --metric is required (supported: %s)\n", trendMetricsHelp)
 		return 2
 	}
-	if *metric != trendMetricMoM {
-		fmt.Fprintf(stderr, "error: unknown --metric %q (supported: mom)\n", *metric)
-		return 2
-	}
-	if *from != "" || *to != "" {
-		fmt.Fprintln(
+	if *metric != trendMetricMoM && *metric != trendMetricMerchants {
+		fmt.Fprintf(
 			stderr,
-			"error: --metric mom requires --period YYYY-MM or the default current month; --from/--to are unsupported",
+			"error: unknown --metric %q (supported: %s)\n",
+			*metric,
+			trendMetricsHelp,
 		)
 		return 2
 	}
-	period, err := store.ResolveTrendMoMPeriod(*periodValue, now)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: --period %v\n", err)
-		return 2
+
+	var momFilter store.TrendMoMFilter
+	var merchantsFilter store.TrendMerchantsFilter
+	switch *metric {
+	case trendMetricMoM:
+		if *from != "" || *to != "" {
+			fmt.Fprintln(
+				stderr,
+				"error: --metric mom requires --period YYYY-MM or the default current month; --from/--to are unsupported",
+			)
+			return 2
+		}
+		period, err := store.ResolveTrendMoMPeriod(*periodValue, now)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: --period %v\n", err)
+			return 2
+		}
+		momFilter = store.TrendMoMFilter{
+			ThisFrom: period.ThisFrom,
+			ThisTo:   period.ThisTo,
+			PrevFrom: period.PrevFrom,
+			PrevTo:   period.PrevTo,
+			Account:  *account,
+		}
+	case trendMetricMerchants:
+		period, err := resolveReadPeriod(*periodValue, *from, *to, now)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+		merchantsFilter = store.TrendMerchantsFilter{
+			From: period.From, To: period.To, Account: *account,
+		}
 	}
+
 	if *databasePath == "" {
 		fmt.Fprintln(stderr, "error: MONETA_DB_PATH or --db is required")
 		return 2
@@ -103,23 +134,22 @@ func runTrendsAt(
 	if !*full {
 		rowLimit = *limit
 	}
-	filter := store.TrendMoMFilter{
-		ThisFrom: period.ThisFrom,
-		ThisTo:   period.ThisTo,
-		PrevFrom: period.PrevFrom,
-		PrevTo:   period.PrevTo,
-		Account:  *account,
-	}
-
 	var document toon.Object
 	switch *metric {
 	case trendMetricMoM:
-		report, err := store.ReadTrendMoM(ctx, database, filter, rowLimit)
+		report, err := store.ReadTrendMoM(ctx, database, momFilter, rowLimit)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		document = buildTrendMoMDoc(report, filter)
+		document = buildTrendMoMDoc(report, momFilter)
+	case trendMetricMerchants:
+		report, err := store.ReadTrendMerchants(ctx, database, merchantsFilter, rowLimit)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		document = buildTrendMerchantsDoc(report, merchantsFilter)
 	}
 
 	format := cli.FormatTOON
@@ -131,6 +161,59 @@ func runTrendsAt(
 		return 1
 	}
 	return 0
+}
+
+func buildTrendMerchantsDoc(
+	report store.TrendMerchantsReport,
+	filter store.TrendMerchantsFilter,
+) toon.Object {
+	merchants := toon.Table{
+		Fields: []string{"merchant", "spend", "count"},
+		Rows:   make([][]any, 0, len(report.Merchants)),
+	}
+	for _, merchant := range report.Merchants {
+		merchants.Rows = append(merchants.Rows, []any{
+			merchant.Name,
+			cli.Money(merchant.SpendCents),
+			merchant.Count,
+		})
+	}
+	document := toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "metric", Value: trendMetricMerchants},
+			{Key: "from", Value: filter.From},
+			{Key: "to", Value: filter.To},
+			{Key: "spend", Value: cli.Money(report.SpendCents)},
+			{Key: "count", Value: report.Count},
+			{Key: "merchants", Value: report.MerchantTotal},
+		}},
+		{Key: "by_merchant", Value: merchants},
+	}
+	if len(report.Merchants) < report.MerchantTotal {
+		document = append(document, toon.Field{
+			Key: "truncated",
+			Value: fmt.Sprintf(
+				"%d of %d merchants shown (--full for all)",
+				len(report.Merchants),
+				report.MerchantTotal,
+			),
+		})
+	}
+	return append(document, toon.Field{Key: "hint", Value: trendMerchantsHint(report, filter)})
+}
+
+func trendMerchantsHint(
+	report store.TrendMerchantsReport,
+	filter store.TrendMerchantsFilter,
+) string {
+	if report.Count == 0 {
+		return "no posted spending in this period; widen --period/--from/--to or run moneta sync"
+	}
+	return fmt.Sprintf(
+		"run moneta tx --from %s --to %s to inspect merchant transactions",
+		filter.From,
+		filter.To,
+	)
 }
 
 func buildTrendMoMDoc(report store.TrendMoMReport, filter store.TrendMoMFilter) toon.Object {

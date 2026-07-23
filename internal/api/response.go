@@ -405,6 +405,59 @@ func debtsHint(report store.DebtReport) string {
 	return "run moneta networth to compare total debt with assets"
 }
 
+func buildTrendMerchantsDocument(
+	report store.TrendMerchantsReport,
+	filter store.TrendMerchantsFilter,
+) toon.Object {
+	merchants := toon.Table{
+		Fields: []string{"merchant", "spend", "count"},
+		Rows:   make([][]any, 0, len(report.Merchants)),
+	}
+	for _, merchant := range report.Merchants {
+		merchants.Rows = append(merchants.Rows, []any{
+			merchant.Name,
+			cli.Money(merchant.SpendCents),
+			merchant.Count,
+		})
+	}
+	document := toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "metric", Value: "merchants"},
+			{Key: "from", Value: filter.From},
+			{Key: "to", Value: filter.To},
+			{Key: "spend", Value: cli.Money(report.SpendCents)},
+			{Key: "count", Value: report.Count},
+			{Key: "merchants", Value: report.MerchantTotal},
+		}},
+		{Key: "by_merchant", Value: merchants},
+	}
+	if len(report.Merchants) < report.MerchantTotal {
+		document = append(document, toon.Field{
+			Key: "truncated",
+			Value: fmt.Sprintf(
+				"%d of %d merchants shown (use full=true for all)",
+				len(report.Merchants),
+				report.MerchantTotal,
+			),
+		})
+	}
+	return append(document, toon.Field{Key: "hint", Value: trendMerchantsHint(report, filter)})
+}
+
+func trendMerchantsHint(
+	report store.TrendMerchantsReport,
+	filter store.TrendMerchantsFilter,
+) string {
+	if report.Count == 0 {
+		return "no posted spending in this period; widen period/from/to or run moneta sync"
+	}
+	return fmt.Sprintf(
+		"run moneta tx --from %s --to %s to inspect merchant transactions",
+		filter.From,
+		filter.To,
+	)
+}
+
 func buildTrendMoMDocument(report store.TrendMoMReport, filter store.TrendMoMFilter) toon.Object {
 	categories := toon.Table{
 		Fields: []string{"category", "spend_this", "spend_prev", "delta"},
