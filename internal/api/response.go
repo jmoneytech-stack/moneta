@@ -366,6 +366,107 @@ func buildDebtsDocument(report store.DebtReport) toon.Object {
 	}
 }
 
+// phase4Note explains the two deliberately empty dashboard slots. Upcoming
+// bills need recurring detection and anomalies need a baseline engine; both
+// are Phase 4. They render as null rather than 0 so an agent can tell "not
+// implemented" from "none found".
+const phase4Note = "upcoming_bills and anomalies are available in a later phase"
+
+// buildDashboardDocument mirrors the moneta dashboard CLI document field for
+// field, so the REST payload and CLI JSON stay interchangeable.
+func buildDashboardDocument(report store.DashboardReport) toon.Object {
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "as_of", Value: dashboardAsOf(report)},
+		}},
+		{Key: "networth", Value: toon.Object{
+			{Key: "assets", Value: cli.Money(report.Networth.AssetsCents)},
+			{Key: "liabilities", Value: cli.Money(report.Networth.LiabilitiesCents)},
+			{Key: "networth", Value: cli.Money(report.Networth.NetworthCents)},
+			{Key: "accounts", Value: report.Networth.Accounts},
+			{Key: "missing_balance", Value: report.Networth.MissingBalance},
+		}},
+		{Key: "cash", Value: toon.Object{
+			{Key: "balance", Value: cli.Money(report.CashCents)},
+			{Key: "accounts", Value: report.CashAccounts},
+			{Key: "note", Value: "checking + savings latest balances"},
+		}},
+		{Key: "credit", Value: toon.Object{
+			{Key: "utilization", Value: dashboardUtilization(report)},
+			{Key: "total_debt", Value: cli.Money(report.CardDebtCents)},
+			{Key: "cards", Value: report.CardCount},
+		}},
+		{Key: "spend_month", Value: toon.Object{
+			{Key: "from", Value: report.From},
+			{Key: "to", Value: report.To},
+			{Key: "total", Value: cli.Money(report.Spend.SpendCents)},
+			{Key: "count", Value: report.Spend.Count},
+		}},
+		{Key: "cashflow_month", Value: toon.Object{
+			{Key: "inflow", Value: cli.Money(report.Cashflow.InflowCents)},
+			{Key: "outflow", Value: cli.Money(report.Cashflow.OutflowCents)},
+			{Key: "net", Value: cli.Money(report.Cashflow.NetCents)},
+			{Key: "savings_rate", Value: dashboardSavingsRate(report)},
+			{Key: "count", Value: report.Cashflow.Count},
+		}},
+		{Key: "sync", Value: toon.Object{
+			{Key: "items", Value: report.Sync.Items},
+			{Key: "needs_attention", Value: report.Sync.NeedsAttention},
+			{Key: "login_required", Value: report.Sync.LoginRequired},
+		}},
+		{Key: "upcoming_bills", Value: nil},
+		{Key: "anomalies", Value: nil},
+		{Key: "phase4_note", Value: phase4Note},
+		{Key: "hint", Value: dashboardHint(report)},
+	}
+}
+
+// dashboardAsOf is the latest balance date across accounts. It is null rather
+// than a fabricated today when no account has a snapshot yet.
+func dashboardAsOf(report store.DashboardReport) any {
+	if report.AsOf == "" {
+		return nil
+	}
+	return report.AsOf
+}
+
+// dashboardUtilization is the credit-card portfolio ratio for "now": summed
+// balances over summed limits across cards that have both a balance snapshot
+// and a positive limit. It is null when no card qualifies, so a missing limit
+// never reads as 0%.
+func dashboardUtilization(report store.DashboardReport) any {
+	if report.UtilizationCards == 0 {
+		return nil
+	}
+	value := cli.Ratio(report.UtilizationDebtCents, report.UtilizationLimitCents, 4)
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func dashboardSavingsRate(report store.DashboardReport) any {
+	value := cli.Ratio(report.Cashflow.NetCents, report.Cashflow.InflowCents, 4)
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+// dashboardHint is the single next step an agent should take.
+func dashboardHint(report store.DashboardReport) string {
+	if report.Sync.LoginRequired > 0 {
+		return "re-run moneta link to reconnect items with status login_required"
+	}
+	if report.Sync.Items == 0 {
+		return "run moneta link to connect an institution, then moneta sync"
+	}
+	if report.Networth.MissingBalance > 0 {
+		return "run moneta sync to pull balances for accounts with no snapshot"
+	}
+	return "run moneta spend or moneta trends for the breakdown behind these totals"
+}
+
 // buildCardsDocument mirrors the debts document without the type column,
 // because every row is a credit card. Utilization stays null unless both a
 // balance and a positive limit exist, so a missing limit never reads as 0%.

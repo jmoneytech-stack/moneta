@@ -58,6 +58,7 @@ func NewHandler(db *sql.DB, apiKey string, logger *log.Logger) (http.Handler, er
 		{"/v1/networth", s.handleNetworth},
 		{"/v1/debts", s.handleDebts},
 		{"/v1/cards", s.handleCards},
+		{"/v1/dashboard", s.handleDashboard},
 		{"/v1/trends", s.handleTrends},
 	}
 	for _, route := range routes {
