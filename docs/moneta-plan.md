@@ -1,6 +1,6 @@
 # Moneta - Architecture Plan
 
-Status: approved design. Phase 1 implementation and post-review hardening are complete. Phase 2 is complete: the poison skip, production `moneta sync`, the `moneta status` / `accounts` / `tx` / `spend` / `cashflow` / `networth` / `debts` reads, the authenticated loopback read-only REST mirror, and GitHub Actions CI are in place, and the post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete. Phase 3's correctness foundation, compute-on-read net-worth history, month-over-month category spend, top-merchant spend, daily credit-utilization, savings-rate, and heuristic fixed-variable trends are complete; later analytics begin only when explicitly prioritized.
+Status: approved design. Phase 1 implementation and post-review hardening are complete. Phase 2 is complete: the poison skip, production `moneta sync`, the `moneta status` / `accounts` / `tx` / `spend` / `cashflow` / `networth` / `debts` reads, the authenticated loopback read-only REST mirror, and GitHub Actions CI are in place, and the post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete. Phase 3's correctness foundation, compute-on-read net-worth history, month-over-month category spend, top-merchant spend, daily credit-utilization, savings-rate, and heuristic fixed-variable trends are complete, and `moneta cards` ships the credit-card-only liability view; later analytics begin only when explicitly prioritized.
 Moneta is a self-hosted personal + business finance data hub whose primary consumer is an AI agent, not a human UI.
 It ingests financial data from pluggable providers, normalizes it into a canonical model in SQLite, and exposes it through a token-efficient AXI CLI (TOON output) and a small REST API.
 
@@ -220,7 +220,7 @@ Conventions on every command: TOON on stdout; one record per line (grep/head fri
 | `moneta income --period [--entity]` | Income streams |
 | `moneta recurring [--entity] [--kind]` | Subscriptions/bills/income with drift flags |
 | `moneta bills [--days 30]` | Upcoming bills + card due dates |
-| `moneta debts [--entity]` / `moneta cards` | Liabilities; card utilization/APR/due dates |
+| `moneta debts [--entity]` / `moneta cards` | Liabilities; `debts` covers cards and loans, `cards` is credit-card-only with limit/utilization/APR/due day |
 | `moneta trends --metric mom\|merchants\|utilization\|savings\|fixed-variable` | Compute-on-read category deltas, top normalized merchants, daily credit utilization, savings rate, or heuristic fixed-variable spend; later reads remain planned |
 | `moneta anomalies [--period]` | Unusual spend vs trailing baseline |
 | `moneta sync [--provider]` / `moneta status` | Incremental sync; Item health incl. `reconnection_needed` |

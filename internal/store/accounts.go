@@ -10,14 +10,14 @@ import (
 // account's latest balance snapshot in integer cents; it is nil when the
 // account has never produced a snapshot. No credentials are selected.
 type AccountSummary struct {
-	ID            int64
-	Name          string
-	Type          string
-	Institution   string
-	EntityName    string
-	Active        bool
-	BalanceCents  *int64
-	BalanceDate   string // YYYY-MM-DD of the latest snapshot, "" when none
+	ID           int64
+	Name         string
+	Type         string
+	Institution  string
+	EntityName   string
+	Active       bool
+	BalanceCents *int64
+	BalanceDate  string // YYYY-MM-DD of the latest snapshot, "" when none
 }
 
 // ListAccountSummaries loads accounts ordered by name then id, optionally

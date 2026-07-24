@@ -170,6 +170,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/cashflow?period=2026-07",
 		"/v1/networth",
 		"/v1/debts",
+		"/v1/cards",
 		"/v1/trends?metric=mom&period=2026-07",
 		"/v1/trends?metric=merchants&period=2026-07",
 		"/v1/trends?metric=utilization&history=1d",
@@ -209,6 +210,7 @@ func TestAPIReadRoutes(t *testing.T) {
 		{"/v1/cashflow?period=2026-07", []string{`"inflow":1000`, `"outflow":25`, `"net":975`, `"savings_rate":0.975`}},
 		{"/v1/networth?as_of=2026-07-22", []string{`"assets":1200`, `"liabilities":3400`, `"networth":-2200`, `"type":"credit_card"`}},
 		{"/v1/debts", []string{`"total_debt":3400`, `"name":"Credit Example"`, `"utilization":0.34`, `"apr":0.2299`}},
+		{"/v1/cards", []string{`"count":1`, `"total_debt":3400`, `"missing_balance":0`, `"name":"Credit Example"`, `"limit":10000`, `"utilization":0.34`, `"apr":0.2299`, `"due_day":15`}},
 		{"/v1/trends?metric=mom&period=2026-07", []string{`"metric":"mom"`, `"spend_this":25`, `"spend_prev":15`, `"delta":10`, `"category":"Food and Drink"`}},
 		{"/v1/trends?metric=merchants&period=2026-07", []string{`"metric":"merchants"`, `"spend":25`, `"count":2`, `"merchants":2`, `"merchant":"Grocery Mart"`, `"merchant":"Cafe Example"`}},
 		{"/v1/trends?metric=merchants&from=2026-07-01&to=2026-07-31", []string{`"metric":"merchants"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"spend":25`, `"count":2`}},
@@ -235,6 +237,69 @@ func TestAPIReadRoutes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAPICardsExcludesLoansAndNullLimitUtilization(t *testing.T) {
+	db := openAPITestDB(t)
+	seedAPITestDB(t, db)
+	entityID, err := store.EnsureDefaultEntity(context.Background(), db)
+	if err != nil {
+		t.Fatalf("EnsureDefaultEntity() error: %v", err)
+	}
+	insertAccount := func(name, accountType, providerID string) int64 {
+		t.Helper()
+		result, err := db.Exec(`
+			INSERT INTO accounts (
+				entity_id, type, name, institution, provider, provider_account_id
+			) VALUES (?, ?, ?, 'Fake Bank', 'plaid', ?)
+		`, entityID, accountType, name, providerID)
+		if err != nil {
+			t.Fatalf("insert account: %v", err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("account id: %v", err)
+		}
+		return id
+	}
+	loan := insertAccount("Auto Loan", "loan", "acct-loan-1")
+	noLimit := insertAccount("Store Card", "credit_card", "acct-card-2")
+	if _, err := db.Exec(`
+		INSERT INTO balance_snapshots (account_id, date, current_cents)
+		VALUES (?, '2026-07-22', 500000), (?, '2026-07-22', 15000)
+	`, loan, noLimit); err != nil {
+		t.Fatalf("insert balances: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO credit_terms (account_id, limit_cents, apr, due_day)
+		VALUES (?, NULL, 27.49, 3)
+	`, noLimit); err != nil {
+		t.Fatalf("insert credit terms: %v", err)
+	}
+
+	handler := newTestHandler(t, db, nil)
+	response := performRequest(handler, "/v1/cards", testAPIKey)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/cards = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"summary":{"count":2,"total_debt":3550,"missing_balance":0}`,
+		`{"name":"Credit Example","balance":3400,"limit":10000,"utilization":0.34,"apr":0.2299,"due_day":15}`,
+		`{"name":"Store Card","balance":150,"limit":null,"utilization":null,"apr":0.2749,"due_day":3}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("cards response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "Auto Loan") {
+		t.Errorf("cards response includes a loan: %s", body)
+	}
+
+	debts := performRequest(handler, "/v1/debts", testAPIKey)
+	if debts.Code != http.StatusOK || !strings.Contains(debts.Body.String(), "Auto Loan") {
+		t.Errorf("GET /v1/debts = %d, want 200 including the loan: %s", debts.Code, debts.Body.String())
 	}
 }
 
@@ -463,6 +528,7 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/networth?history=7d&as_of=2026-07-22", "cannot be combined"},
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
 		{"/v1/debts?unexpected=value", "unknown query parameter"},
+		{"/v1/cards?unexpected=value", "unknown query parameter"},
 		{"/v1/trends", "metric"},
 		{"/v1/trends?metric=cards", "unknown metric"},
 		{"/v1/trends?metric=mom&period=2026-13", "valid YYYY-MM"},

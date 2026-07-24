@@ -231,6 +231,11 @@ REST test: /v1/trends?metric=<m> mirrors the CLI numbers.
 
 Credit-card-focused projection of the `debts` data (utilization / APR / due dates), filtered to `credit_card`. Small; largely a focused view over the PR1/PR2-corrected debts store. Includes `/v1/cards`.
 
+**PR9 status:** `cards` is implemented as a card-only scope on the shared liability query.
+`store.ReadDebts` and `store.ReadCards` both call one internal `readLiabilities` with a constant account-type predicate, so the balance-and-terms SQL exists once and summary totals cover only the scoped rows.
+`moneta cards` and `GET /v1/cards` emit `name`, `balance`, `limit`, `utilization`, `apr`, and `due_day` with the debts-style `count` / `total_debt` / `missing_balance` summary; the `type` column is omitted because every row is a credit card.
+Utilization stays `null` when the limit is absent, zero, or negative (PR2), and balances keep their stored sign (PR1).
+
 ### Tests first
 ```
 TestCardsShowsUtilizationAndDueDates (store/cmd): a seeded card renders utilization from a real

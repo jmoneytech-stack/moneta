@@ -14,7 +14,7 @@ The complete Link, transactions, balances, liabilities, encrypted persistence, a
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
-The Phase 3 correctness foundation is complete; compute-on-read analytics now include `moneta networth --history Nd` and the `mom`, `merchants`, `utilization`, `savings`, and `fixed-variable` trend metrics without materialized analytics tables.
+The Phase 3 correctness foundation is complete; compute-on-read analytics now include `moneta networth --history Nd`, the `mom`, `merchants`, `utilization`, `savings`, and `fixed-variable` trend metrics, and the credit-card-only `moneta cards` view, without materialized analytics tables.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -238,6 +238,22 @@ Plaid APR enters SQLite as percentage points; output converts it to a decimal fr
 Money remains integer cents internally and renders through `cli.Money`.
 Exit codes: 0 ok, 1 error, 2 usage.
 
+## Cards
+
+```sh
+go run ./cmd/moneta cards [--json]
+```
+
+Cards is the credit-card-only view of the same balance and terms data behind `moneta debts`: balance, limit, utilization, APR, and due day.
+Loan accounts are not included and stay under `moneta debts`; every other account type is excluded from both.
+The table omits the `type` column because every row is a credit card, and the summary keeps the `count` / `total_debt` / `missing_balance` shape so it lines up with `debts`.
+Both commands read one shared store query, so balance-sign, terms, and ordering behavior is identical.
+Utilization is `balance / limit`, truncated toward zero to four decimal places, and is `null` when the balance is missing or the limit is absent, zero, or negative; a missing limit never renders as `0`.
+Balances keep their canonical sign, so an overpaid card reports a negative balance and reduces `total_debt` honestly.
+A card without a balance snapshot stays in the table with `balance: null` and increments `missing_balance`.
+Money remains integer cents internally and renders through `cli.Money`, and APR renders as a decimal fraction rounded to the nearest basis point.
+Exit codes: 0 ok, 1 error, 2 usage.
+
 ## Read-only REST API
 
 Set the database path and an API key through the environment, then start the loopback server:
@@ -270,6 +286,7 @@ Read routes:
 | `GET /v1/cashflow` | `period` or `from` + `to`, `account` |
 | `GET /v1/networth` | `as_of` or `history=Nd` |
 | `GET /v1/debts` | none |
+| `GET /v1/cards` | none |
 | `GET /v1/trends` | required `metric=mom\|merchants\|utilization\|savings\|fixed-variable`; `mom`: optional `period`; `merchants`: `period` or `from` + `to`, plus `limit`/`full`; `utilization`: `history`, `period`, or `from` + `to`; `savings` and `fixed-variable`: `period` or `from` + `to`; all: `account` |
 
 Period and date semantics match their CLI counterparts.
