@@ -200,7 +200,8 @@ TestNetworthHistoryWindowBounds (cmd): --history 90d inclusive/exclusive ends ma
 **PR5 status:** `merchants` is implemented with spend-style period windows, exact `merchant_norm` grouping, one unknown bucket, spend ordering, CLI TOON/JSON, and authenticated REST.
 **PR6 status:** `utilization` is implemented as a carried-forward daily credit-card portfolio series with a 30-day default, alternative history/month/custom windows, nullable snapshot-limit handling with current-terms fallback, integer-ratio output, and authenticated REST.
 **PR7 status:** `savings` is implemented as a summary-only projection over the existing cashflow store aggregation, with cashflow-style period windows, integer-ratio output, CLI TOON/JSON, and authenticated REST.
-PR8 fixed-variable remains blocked on the R3 definition; its metric name remains rejected until explicitly resolved and started.
+**PR8 status:** `fixed-variable` is implemented as heuristic v1 over spend-filtered outflows: seeded category ID 16 or exact `Rent and Utilities` name is fixed, NULL category is unclassified, and every other categorized row is variable.
+It returns summary totals, integer fixed share, a fixed three-row bucket table, CLI TOON/JSON, and authenticated REST.
 
 New `moneta trends` command + `/v1/trends`, following AXI conventions (summary, per-row, truncation, hint, `--json`). Reuses `spend`/`cashflow` exclusion + period helpers. Each `--metric` is its **own PR** on this template:
 
@@ -210,7 +211,7 @@ New `moneta trends` command + `/v1/trends`, following AXI conventions (summary, 
 | PR5 | `merchants` | top merchants by spend in a period | - |
 | PR6 | `utilization` | credit utilization trend over `balance_snapshots` limit vs balance per day | **PR2** (NULL limit ⇒ excluded from the trend, not treated as 0) |
 | PR7 | `savings` | savings rate = net / inflow over a period (reuse `cli.Ratio`) | - |
-| PR8 | `fixed-variable` | fixed vs variable expense split (definition to confirm - see R3) | - |
+| PR8 | `fixed-variable` | static heuristic v1: Rent and Utilities fixed, NULL category unclassified, other categorized spend variable | - |
 
 ### Tests first (per metric)
 ```
@@ -277,6 +278,9 @@ TestDashboardComposesSections: asserts each section reads from its underlying st
 
 - **R1 (resolved by PR1).** Plaid documentation and its published Sandbox `/liabilities/get` response confirm positive-when-owed current balances for credit-card and loan accounts. Migration `000003` is therefore a documented no-op that preserves existing negative credits.
 - **R2 (accepted limitation).** D3-2 cannot reclassify historical sentinel-0 optional-money rows to NULL (a stored `0` is ambiguous between "real zero" and "was missing"). Utilization for accounts whose limit predates PR2 stays sentinel-0 until a fresh sync overwrites that account's *current-day* row with NULL; historical days remain sentinel-0. PR6 treats a stored zero as an authoritative non-positive snapshot limit, excludes that card-day, and does not replace it with the current-terms fallback. Go-forward only, by design.
-- **R3 (maintainer input welcome, not blocking).** Two definitional choices: (a) the "fixed vs variable" split (PR8) needs a concrete rule - propose category-kind-based or recurring-linked (recurring is phase 4, so category-kind for now); (b) whether the dashboard is the no-arg `moneta` default or an explicit `moneta dashboard` subcommand. Defaults proposed in-line; confirm at PR4/PR10 time.
+- **R3(a) (resolved by PR8).** Fixed-variable is static heuristic v1, not recurring detection: seeded category ID 16 or exact name `Rent and Utilities` is fixed, NULL category is unclassified, and every other categorized outflow that passes spend filters is variable.
+  The taxonomy is not user-editable in PR8.
+  Future A2 replaces the static heuristic with a persisted classification such as `categories.expense_class` (or equivalent) and must not change the `trends --metric fixed-variable` fields (`fixed`, `variable`, `unclassified`, `fixed_share`), so the CLI and REST shape stays stable across the swap.
+- **R3(b) (deferred to PR10).** Decide whether the dashboard is the no-arg `moneta` default or an explicit `moneta dashboard` subcommand when PR10 starts.
 - **R4 (scope boundary).** Without `moneta tag` / D2 (out of scope), all trends reflect provider categorization; a user cannot yet re-bucket a miscategorized merchant, so category trends inherit Plaid's category quality.
 - **R5 (dashboard/phase-4 coupling).** PR10's dashboard has two Phase-4-shaped holes (upcoming bills, anomaly count). Decide whether to ship the dashboard in Phase 3 with documented placeholders or defer it to Phase 4 when those inputs exist. Recommendation: ship with placeholders so the surface is stable, fill in phase 4.
