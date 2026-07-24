@@ -21,7 +21,8 @@ Production `moneta sync` ships on the library path (PR #2).
 The post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete: confirmed ingest wedge paths closed, uniform exit codes, transfer-aware `tx` aggregates, durable skip and reauth state, TOON hardening.
 Phase 2 is complete, including GitHub Actions build, vet, test, CGO-free test, and race-test gates.
 Phase 3's liability-sign and nullable-money foundation is complete, and compute-on-read daily net-worth history, month-over-month category spend, top-merchant spend, daily credit-utilization, savings-rate, and heuristic fixed-variable trends ship through CLI TOON/JSON and authenticated REST.
-PR9 cards, PR10 dashboard, and later features start only when explicitly prioritized.
+PR9 adds `moneta cards`, the credit-card-only projection of the debts data (balance, limit, utilization, APR, due day); loans stay in `moneta debts`.
+PR10 dashboard and later features start only when explicitly prioritized.
 
 ## Non-Goals
 

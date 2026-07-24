@@ -12,8 +12,9 @@ Phase 1 implementation and post-review hardening are complete.
 Phase 2a-2j are done: the single-row poison skip, production `moneta sync` on the library path (PR #2), `moneta status` with the shared TOON/JSON output path (`internal/toon`, `internal/cli`), the `moneta accounts` / `moneta tx` / `moneta spend` / `moneta cashflow` / `moneta networth` / `moneta debts` reads, the authenticated loopback `moneta serve` JSON mirror, and GitHub Actions CI for build, vet, tests, CGO-free tests, and race tests.
 The post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete: the confirmed single-row ingest wedge paths are closed, CLI exit codes are uniform (usage = 2), the `tx` aggregate excludes transfers, skip counts persist per import run, reauth failures persist `login_required` so `moneta status` exit 3 is live, and the TOON encoder is hardened.
 Phase 2 is complete.
-Phase 3's D3-1 liability-sign and D3-2 nullable-money foundation is complete, PR3 adds compute-on-read `networth --history`, and PR4-PR8 add the `mom`, `merchants`, `utilization`, `savings`, and heuristic-v1 `fixed-variable` trend metrics; all reads have authenticated REST mirrors.
-Do not begin PR9 cards, PR10 dashboard, or any later feature until explicitly requested by the maintainer.
+Phase 3's D3-1 liability-sign and D3-2 nullable-money foundation is complete, PR3 adds compute-on-read `networth --history`, PR4-PR8 add the `mom`, `merchants`, `utilization`, `savings`, and heuristic-v1 `fixed-variable` trend metrics, and PR9 adds the credit-card-only `moneta cards` view over the shared debts query; all reads have authenticated REST mirrors.
+Loans stay in `moneta debts`; `moneta cards` is `credit_card` only.
+Do not begin PR10 dashboard or any later feature until explicitly requested by the maintainer.
 
 ## Working Rules
 

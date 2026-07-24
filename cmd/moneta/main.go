@@ -61,6 +61,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runTrends(ctx, args[1:], stdout, stderr)
 	case "debts":
 		return runDebts(ctx, args[1:], stdout, stderr)
+	case "cards":
+		return runCards(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return runServe(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -345,5 +347,6 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "  networth  summarize current or daily historical net worth (TOON on stdout)")
 	fmt.Fprintln(writer, "  trends    compare compute-on-read financial trends (TOON on stdout)")
 	fmt.Fprintln(writer, "  debts     list credit-card and loan balances with terms (TOON on stdout)")
+	fmt.Fprintln(writer, "  cards     list credit cards with limit, utilization, APR, and due day (TOON on stdout)")
 	fmt.Fprintln(writer, "  serve     serve authenticated JSON reads over loopback HTTP")
 }

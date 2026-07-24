@@ -516,6 +516,19 @@ func (s *server) handleDebts(writer http.ResponseWriter, request *http.Request) 
 	writeDocument(writer, buildDebtsDocument(report))
 }
 
+func (s *server) handleCards(writer http.ResponseWriter, request *http.Request) {
+	if err := validateQueryKeys(request.URL.Query()); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	report, err := store.ReadCards(request.Context(), s.db)
+	if err != nil {
+		s.internalError(writer, "read cards", err)
+		return
+	}
+	writeDocument(writer, buildCardsDocument(report))
+}
+
 func (s *server) internalError(writer http.ResponseWriter, operation string, err error) {
 	s.logger.Printf("REST %s: %v", operation, err)
 	writeError(writer, http.StatusInternalServerError, "internal server error")

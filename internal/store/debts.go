@@ -30,17 +30,36 @@ type DebtReport struct {
 	Debts          []DebtRow
 }
 
+// Account-type scopes for the shared liability query. Both are compile-time
+// constants spliced into a fixed statement, so the SQL never depends on input.
+const (
+	liabilityScopeAll   = `accounts.type IN ('credit_card', 'loan')`
+	liabilityScopeCards = `accounts.type = 'credit_card'`
+)
+
 // ReadDebts loads every credit-card and loan account, its latest balance, and
 // matching terms in one query inside one read transaction. It performs no
 // provider calls and selects no credentials.
 func ReadDebts(ctx context.Context, db *sql.DB) (DebtReport, error) {
+	return readLiabilities(ctx, db, liabilityScopeAll, "debts")
+}
+
+// readLiabilities is the single balance-and-terms query behind ReadDebts and
+// ReadCards. scope must be one of the liabilityScope constants; operation names
+// the caller in error messages. Summary totals cover only the scoped rows.
+func readLiabilities(
+	ctx context.Context,
+	db *sql.DB,
+	scope string,
+	operation string,
+) (DebtReport, error) {
 	var report DebtReport
 	if db == nil {
 		return report, fmt.Errorf("database is required")
 	}
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return report, fmt.Errorf("begin debts read: %w", err)
+		return report, fmt.Errorf("begin %s read: %w", operation, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -77,11 +96,11 @@ func ReadDebts(ctx context.Context, db *sql.DB) (DebtReport, error) {
 		LEFT JOIN latest_balances ON latest_balances.account_id = accounts.id
 		LEFT JOIN credit_terms ON credit_terms.account_id = accounts.id
 		LEFT JOIN loan_terms ON loan_terms.account_id = accounts.id
-		WHERE accounts.type IN ('credit_card', 'loan')
+		WHERE `+scope+`
 		ORDER BY accounts.name, accounts.id
 	`)
 	if err != nil {
-		return report, fmt.Errorf("read debts: %w", err)
+		return report, fmt.Errorf("read %s: %w", operation, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -92,12 +111,12 @@ func ReadDebts(ctx context.Context, db *sql.DB) (DebtReport, error) {
 		var apr sql.NullFloat64
 		var dueDay sql.NullInt64
 		if err := rows.Scan(&debt.Name, &debt.Type, &balance, &limit, &apr, &dueDay); err != nil {
-			return report, fmt.Errorf("scan debt: %w", err)
+			return report, fmt.Errorf("scan %s row: %w", operation, err)
 		}
 		if balance.Valid {
 			amount := balance.Int64
 			if amount == math.MinInt64 {
-				return report, fmt.Errorf("debt balance magnitude overflows integer cents")
+				return report, fmt.Errorf("%s balance magnitude overflows integer cents", operation)
 			}
 			debt.BalanceCents = &amount
 			if err := addDebtCents(&report.TotalDebtCents, amount); err != nil {
@@ -124,11 +143,11 @@ func ReadDebts(ctx context.Context, db *sql.DB) (DebtReport, error) {
 		report.Debts = append(report.Debts, debt)
 	}
 	if err := rows.Err(); err != nil {
-		return report, fmt.Errorf("read debts: %w", err)
+		return report, fmt.Errorf("read %s: %w", operation, err)
 	}
 	report.Count = len(report.Debts)
 	if err := tx.Commit(); err != nil {
-		return report, fmt.Errorf("commit debts read: %w", err)
+		return report, fmt.Errorf("commit %s read: %w", operation, err)
 	}
 	return report, nil
 }
