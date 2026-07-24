@@ -171,6 +171,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/networth",
 		"/v1/debts",
 		"/v1/cards",
+		"/v1/dashboard",
 		"/v1/trends?metric=mom&period=2026-07",
 		"/v1/trends?metric=merchants&period=2026-07",
 		"/v1/trends?metric=utilization&history=1d",
@@ -237,6 +238,72 @@ func TestAPIReadRoutes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAPIDashboardComposesSectionsWithPlaceholders(t *testing.T) {
+	db := openAPITestDB(t)
+	seedAPITestDB(t, db)
+	fixedNow := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
+	var logs bytes.Buffer
+	s := &server{
+		db:         db,
+		apiKeyHash: sha256.Sum256([]byte(testAPIKey)),
+		logger:     log.New(&logs, "", 0),
+		now:        func() time.Time { return fixedNow },
+	}
+	handler := s.authenticate(s.recoverPanics(http.HandlerFunc(s.handleDashboard)))
+	response := performRequest(handler, "/v1/dashboard", testAPIKey)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/dashboard = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"summary":{"as_of":"2026-07-22"}`,
+		`"networth":{"assets":1200,"liabilities":3400,"networth":-2200,"accounts":2,"missing_balance":0}`,
+		`"cash":{"balance":1200,"accounts":1,"note":"checking + savings latest balances"}`,
+		`"credit":{"utilization":0.34,"total_debt":3400,"cards":1}`,
+		`"spend_month":{"from":"2026-07-01","to":"2026-07-31","total":25,"count":2}`,
+		`"cashflow_month":{"inflow":1000,"outflow":25,"net":975,"savings_rate":0.975,"count":3}`,
+		`"sync":{"items":1,"needs_attention":0,"login_required":0}`,
+		`"upcoming_bills":null`,
+		`"anomalies":null`,
+		`"phase4_note":"upcoming_bills and anomalies are available in a later phase"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard response missing %q: %s", want, body)
+		}
+	}
+	for _, unwanted := range []string{`"upcoming_bills":0`, `"anomalies":0`} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("dashboard fabricates a Phase 4 value %q: %s", unwanted, body)
+		}
+	}
+}
+
+func TestAPIDashboardSurfacesLoginRequired(t *testing.T) {
+	db := openAPITestDB(t)
+	seedAPITestDB(t, db)
+	if _, err := db.Exec(`
+		UPDATE provider_items SET status = 'login_required' WHERE item_id = 'item-fake'
+	`); err != nil {
+		t.Fatalf("set login_required: %v", err)
+	}
+	fixedNow := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
+	var logs bytes.Buffer
+	s := &server{
+		db:         db,
+		apiKeyHash: sha256.Sum256([]byte(testAPIKey)),
+		logger:     log.New(&logs, "", 0),
+		now:        func() time.Time { return fixedNow },
+	}
+	handler := s.authenticate(s.recoverPanics(http.HandlerFunc(s.handleDashboard)))
+	response := performRequest(handler, "/v1/dashboard", testAPIKey)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/dashboard = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"sync":{"items":1,"needs_attention":1,"login_required":1}`) {
+		t.Errorf("dashboard did not surface login_required: %s", response.Body.String())
 	}
 }
 
@@ -529,6 +596,7 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
 		{"/v1/debts?unexpected=value", "unknown query parameter"},
 		{"/v1/cards?unexpected=value", "unknown query parameter"},
+		{"/v1/dashboard?unexpected=value", "unknown query parameter"},
 		{"/v1/trends", "metric"},
 		{"/v1/trends?metric=cards", "unknown metric"},
 		{"/v1/trends?metric=mom&period=2026-13", "valid YYYY-MM"},

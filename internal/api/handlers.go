@@ -529,6 +529,34 @@ func (s *server) handleCards(writer http.ResponseWriter, request *http.Request) 
 	writeDocument(writer, buildCardsDocument(report))
 }
 
+// handleDashboard mirrors the moneta dashboard CLI payload. There is no HTTP
+// analogue of the CLI's exit 3, so reconnection state is reported inside the
+// document through the sync section.
+func (s *server) handleDashboard(writer http.ResponseWriter, request *http.Request) {
+	if err := validateQueryKeys(request.URL.Query()); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	now := time.Now()
+	if s.now != nil {
+		now = s.now()
+	}
+	month, err := resolvePeriod(nil, now)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	report, err := store.ReadDashboard(request.Context(), s.db, store.DashboardFilter{
+		From: month.from,
+		To:   month.to,
+	})
+	if err != nil {
+		s.internalError(writer, "read dashboard", err)
+		return
+	}
+	writeDocument(writer, buildDashboardDocument(report))
+}
+
 func (s *server) internalError(writer http.ResponseWriter, operation string, err error) {
 	s.logger.Printf("REST %s: %v", operation, err)
 	writeError(writer, http.StatusInternalServerError, "internal server error")

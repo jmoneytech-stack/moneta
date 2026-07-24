@@ -19,7 +19,7 @@ Do **not** commit or push unless the maintainer explicitly asks.
 ## Goals
 
 1. Land the analytics-correctness foundation: an honest liability balance sign convention (D3-1) and nullable optional money (D3-2), so every downstream figure is trustworthy.
-2. Ship the Phase 3 read surface: `networth --history`, `moneta trends` (five metrics), `moneta cards`, and the bare `moneta` dashboard, each mirrored over the existing authenticated loopback REST server.
+2. Ship the Phase 3 read surface: `networth --history`, `moneta trends` (five metrics), `moneta cards`, and `moneta dashboard`, each mirrored over the existing authenticated loopback REST server. **Complete as of PR10.**
 3. Keep analytics compute-on-read (D3-3); introduce no precompute tables in this stack.
 
 ## Non-goals
@@ -248,11 +248,19 @@ TestCardsShowsUtilizationAndDueDates (store/cmd): a seeded card renders utilizat
 
 ---
 
-## PR10 - Bare `moneta` dashboard (last)
+## PR10 - `moneta dashboard` (last)
 
 Composes the above into the content-first dashboard (`moneta-plan.md:214`): net worth, cash, utilization, sync health.
 "Upcoming bills" and "anomaly count" are **Phase 4** inputs - render them as explicit empty placeholders with a one-line "available in a later phase" note, not fabricated values.
-Root REST route (`/v1/` dashboard payload) mirrors it.
+An explicit `/v1/dashboard` REST route mirrors it, so `/v1/` stays unambiguous.
+
+**PR10 status:** complete, and with it the Phase 3 feature surface.
+`store.ReadDashboard` composes `ReadNetworth`, `ReadCards`, `ReadSpend`, `ReadCashflow`, and `ListProviderItemStatuses`; it adds no new aggregation beyond selecting depository cash from the net-worth by-type totals and the card-portfolio utilization inputs.
+Sections: `summary.as_of`, `networth`, `cash`, `credit`, `spend_month`, `cashflow_month`, `sync`, and the two Phase 4 placeholders.
+Cash is checking plus savings latest balances, so investments and other assets count toward net worth but not cash.
+Credit utilization is the card portfolio for "now": summed balances over summed limits across cards that have both a balance snapshot and a positive limit, and `null` when no card qualifies.
+`as_of` is the latest balance date across accounts and is `null` rather than a fabricated today when no snapshot exists.
+The CLI exits 3 when any Item is `login_required`, matching `moneta status`, and still renders the full document first; REST returns 200 and reports the same state in the `sync` section.
 
 ### Tests first
 ```
@@ -260,7 +268,7 @@ TestDashboardComposesSections: asserts each section reads from its underlying st
   slots render as documented empty placeholders, never fabricated.
 ```
 ### Acceptance
-- `moneta` (no args currently prints usage/exit 2 - decide: dashboard becomes the no-arg default, or `moneta dashboard`; see R3). Sync-health reflects `provider_items.status` incl. `login_required` (exit-3 semantics from Phase 2 PR7).
+- `moneta dashboard` + `/v1/dashboard`. Bare `moneta` keeps printing usage and exiting 2 (R3(b)/B1). Sync-health reflects `provider_items.status` incl. `login_required` (exit-3 semantics from Phase 2 PR7).
 ### Out of scope
 - Recurring/anomaly computation (phase 4). Any write.
 
@@ -286,6 +294,10 @@ TestDashboardComposesSections: asserts each section reads from its underlying st
 - **R3(a) (resolved by PR8).** Fixed-variable is static heuristic v1, not recurring detection: seeded category ID 16 or exact name `Rent and Utilities` is fixed, NULL category is unclassified, and every other categorized outflow that passes spend filters is variable.
   The taxonomy is not user-editable in PR8.
   Future A2 replaces the static heuristic with a persisted classification such as `categories.expense_class` (or equivalent) and must not change the `trends --metric fixed-variable` fields (`fixed`, `variable`, `unclassified`, `fixed_share`), so the CLI and REST shape stays stable across the swap.
-- **R3(b) (deferred to PR10).** Decide whether the dashboard is the no-arg `moneta` default or an explicit `moneta dashboard` subcommand when PR10 starts.
+- **R3(b) (resolved as B1 by PR10).** The dashboard is an explicit `moneta dashboard` subcommand, not the no-arg default.
+  Bare `moneta` continues to print usage and exit 2, so adding the dashboard changed no existing behavior and left room for a future no-arg default if one is ever wanted.
+  The REST mirror is likewise the explicit `/v1/dashboard` rather than a payload on `/v1/`.
 - **R4 (scope boundary).** Without `moneta tag` / D2 (out of scope), all trends reflect provider categorization; a user cannot yet re-bucket a miscategorized merchant, so category trends inherit Plaid's category quality.
-- **R5 (dashboard/phase-4 coupling).** PR10's dashboard has two Phase-4-shaped holes (upcoming bills, anomaly count). Decide whether to ship the dashboard in Phase 3 with documented placeholders or defer it to Phase 4 when those inputs exist. Recommendation: ship with placeholders so the surface is stable, fill in phase 4.
+- **R5 (resolved as C1 by PR10).** The dashboard shipped in Phase 3 with documented placeholders rather than waiting for Phase 4, so the surface is stable now and Phase 4 fills the holes in place.
+  `upcoming_bills` and `anomalies` render as explicit `null`, never `0` and never an empty list, so an agent can distinguish "not implemented yet" from "none found"; a one-line `phase4_note` states this in the payload itself.
+  Filling them in Phase 4 adds values to existing keys and changes no other field.

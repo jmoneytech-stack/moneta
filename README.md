@@ -14,7 +14,7 @@ The complete Link, transactions, balances, liabilities, encrypted persistence, a
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
-The Phase 3 correctness foundation is complete; compute-on-read analytics now include `moneta networth --history Nd`, the `mom`, `merchants`, `utilization`, `savings`, and `fixed-variable` trend metrics, and the credit-card-only `moneta cards` view, without materialized analytics tables.
+Phase 3 is complete; compute-on-read analytics now include `moneta networth --history Nd`, the `mom`, `merchants`, `utilization`, `savings`, and `fixed-variable` trend metrics, the credit-card-only `moneta cards` view, and the composed `moneta dashboard`, without materialized analytics tables.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -254,6 +254,66 @@ A card without a balance snapshot stays in the table with `balance: null` and in
 Money remains integer cents internally and renders through `cli.Money`, and APR renders as a decimal fraction rounded to the nearest basis point.
 Exit codes: 0 ok, 1 error, 2 usage.
 
+## Dashboard
+
+```sh
+go run ./cmd/moneta dashboard [--json]
+```
+
+Dashboard is the content-first summary an agent reads first.
+It composes the existing reads into one document and computes no new metric of its own.
+
+```
+summary:
+  as_of: 2026-07-22
+networth:
+  assets: 10700
+  liabilities: 8550
+  networth: 2150
+  accounts: 6
+  missing_balance: 0
+cash:
+  balance: 1700
+  accounts: 2
+  note: checking + savings latest balances
+credit:
+  utilization: 0.34
+  total_debt: 3550
+  cards: 2
+spend_month:
+  from: 2026-07-01
+  to: 2026-07-31
+  total: 25
+  count: 1
+cashflow_month:
+  inflow: 1000
+  outflow: 25
+  net: 975
+  savings_rate: 0.975
+  count: 2
+sync:
+  items: 1
+  needs_attention: 0
+  login_required: 0
+upcoming_bills: null
+anomalies: null
+phase4_note: upcoming_bills and anomalies are available in a later phase
+hint: run moneta spend or moneta trends for the breakdown behind these totals
+```
+
+`moneta dashboard` is an explicit subcommand; bare `moneta` still prints usage and exits 2.
+`as_of` is the latest balance date across accounts and is `null` when no account has a snapshot yet, rather than a fabricated today.
+`cash` counts checking and savings latest balances only, so investments and other assets contribute to `networth` but not to `cash`.
+`credit.utilization` is the card portfolio for now: summed balances over summed limits across cards that have both a balance snapshot and a positive limit, and `null` when no card qualifies, so a missing limit never reads as 0%.
+`spend_month` and `cashflow_month` cover the current calendar month in the host's local timezone and reuse the same posted, non-excluded rules as `moneta spend` and `moneta cashflow`.
+`sync` reports Item counts only; per-Item detail stays in `moneta status`.
+
+`upcoming_bills` and `anomalies` are explicit `null` placeholders, never `0` and never an empty list, because recurring detection and anomaly baselines are Phase 4 work.
+The `phase4_note` line states this inside the payload so an agent can tell "not implemented yet" from "none found".
+
+Exit codes: 0 ok, 1 error, 2 usage, 3 an Item needs reconnection.
+Exit 3 matches `moneta status`, and the full document still renders first so scripts can both detect the state and read the payload.
+
 ## Read-only REST API
 
 Set the database path and an API key through the environment, then start the loopback server:
@@ -287,6 +347,7 @@ Read routes:
 | `GET /v1/networth` | `as_of` or `history=Nd` |
 | `GET /v1/debts` | none |
 | `GET /v1/cards` | none |
+| `GET /v1/dashboard` | none |
 | `GET /v1/trends` | required `metric=mom\|merchants\|utilization\|savings\|fixed-variable`; `mom`: optional `period`; `merchants`: `period` or `from` + `to`, plus `limit`/`full`; `utilization`: `history`, `period`, or `from` + `to`; `savings` and `fixed-variable`: `period` or `from` + `to`; all: `account` |
 
 Period and date semantics match their CLI counterparts.
