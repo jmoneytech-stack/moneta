@@ -14,7 +14,7 @@ The complete Link, transactions, balances, liabilities, encrypted persistence, a
 The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes the confirmed single-row ingest wedges, aligns CLI exit codes, excludes transfers from the `tx` aggregate, persists skip counts and reauth state, and hardens the TOON encoder.
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
-The Phase 3 correctness foundation is complete; compute-on-read analytics now include `moneta networth --history Nd` and the `mom`, `merchants`, `utilization`, and `savings` trend metrics without materialized analytics tables.
+The Phase 3 correctness foundation is complete; compute-on-read analytics now include `moneta networth --history Nd` and the `mom`, `merchants`, `utilization`, `savings`, and `fixed-variable` trend metrics without materialized analytics tables.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -140,9 +140,10 @@ go run ./cmd/moneta trends --metric mom [--period 2026-07] [--account checking] 
 go run ./cmd/moneta trends --metric merchants [--period 2026-07 | --from 2026-07-01 --to 2026-07-31] [--account checking] [--json] [--limit N | --full]
 go run ./cmd/moneta trends --metric utilization [--history 30d | --period 2026-07 | --from 2026-07-01 --to 2026-07-31] [--account card] [--json]
 go run ./cmd/moneta trends --metric savings [--period 2026-07 | --from 2026-07-01 --to 2026-07-31] [--account checking] [--json]
+go run ./cmd/moneta trends --metric fixed-variable [--period 2026-07 | --from 2026-07-01 --to 2026-07-31] [--account checking] [--json]
 ```
 
-`--metric` is required, and the supported values are `mom`, `merchants`, `utilization`, and `savings`; later trend metrics return a usage error until their own PRs land.
+`--metric` is required, and the supported values are `mom`, `merchants`, `utilization`, `savings`, and `fixed-variable`; later trend metrics return a usage error until their own PRs land.
 For `mom`, the selected calendar month is the current comparison period, with the immediately preceding calendar month as its baseline.
 With no `--period`, `mom` uses the current month in the host's local timezone.
 Custom `--from` / `--to` windows are rejected for `mom` so both sides remain calendar months.
@@ -175,10 +176,18 @@ It calls the same `store.ReadCashflow` aggregation as `moneta cashflow`, so coun
 Savings rate is `cli.Ratio(net, inflow, 4)` and is `null` when inflow is zero.
 The metric is summary-only, so `--history`, `--limit`, and `--full` are rejected.
 
-The `mom`, `merchants`, and `savings` transaction metrics include posted rows only and always apply `excluded = 0`.
-The `mom` and `merchants` metrics include outflows only, while `savings` includes both inflows and outflows.
+The `fixed-variable` metric is heuristic v1, not recurring detection or a user-editable taxonomy.
+It uses the same current-month default, explicit calendar month, or complete inclusive custom date pair as `moneta spend`.
+It applies the exact spend filters: posted, `excluded = 0`, and negative amounts only.
+A row is fixed when its category ID is the seeded `Rent and Utilities` ID 16 or its category name is exactly `Rent and Utilities`.
+A row with a NULL `category_id` is unclassified, and every other categorized row that passes the spend filters is variable.
+The summary reports positive fixed, variable, unclassified, and total spend magnitudes plus `fixed_share = cli.Ratio(fixed, total, 4)`; the share is `null` when total is zero.
+The fixed three-row `by_bucket` table also reports transaction counts, so `--history`, `--limit`, and `--full` are rejected.
+
+The `mom`, `merchants`, `savings`, and `fixed-variable` transaction metrics include posted rows only and always apply `excluded = 0`.
+The `mom`, `merchants`, and `fixed-variable` metrics include outflows only, while `savings` includes both inflows and outflows.
 The row-based `mom` and `merchants` metrics truncate to 20 rows by default without changing summary totals.
-All four metrics use the same case-insensitive escaped literal `--account` substring behavior.
+All five metrics use the same case-insensitive escaped literal `--account` substring behavior.
 Exit codes: 0 ok, 1 error, 2 usage.
 
 ## Cash flow
@@ -261,7 +270,7 @@ Read routes:
 | `GET /v1/cashflow` | `period` or `from` + `to`, `account` |
 | `GET /v1/networth` | `as_of` or `history=Nd` |
 | `GET /v1/debts` | none |
-| `GET /v1/trends` | required `metric=mom\|merchants\|utilization\|savings`; `mom`: optional `period`; `merchants`: `period` or `from` + `to`, plus `limit`/`full`; `utilization`: `history`, `period`, or `from` + `to`; `savings`: `period` or `from` + `to`; all: `account` |
+| `GET /v1/trends` | required `metric=mom\|merchants\|utilization\|savings\|fixed-variable`; `mom`: optional `period`; `merchants`: `period` or `from` + `to`, plus `limit`/`full`; `utilization`: `history`, `period`, or `from` + `to`; `savings` and `fixed-variable`: `period` or `from` + `to`; all: `account` |
 
 Period and date semantics match their CLI counterparts.
 Use `full=true` to disable a route's default 20-row limit.

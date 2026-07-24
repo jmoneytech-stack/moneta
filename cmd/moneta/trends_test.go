@@ -407,6 +407,136 @@ func TestRunTrendsSavingsZeroInflowUsesNullRate(t *testing.T) {
 	}
 }
 
+func seedTrendFixedVariableCommandDB(t *testing.T) string {
+	t.Helper()
+	databasePath := seedTrendMoMCommandDB(t)
+	db, err := store.Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatalf("open fixed-variable database: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close fixed-variable database: %v", err)
+		}
+	}()
+	var accountID, entityID int64
+	if err := db.QueryRow(`
+		SELECT id, entity_id FROM accounts WHERE provider_account_id = 'trend-account'
+	`).Scan(&accountID, &entityID); err != nil {
+		t.Fatalf("read fixed-variable fixture account: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO transactions (
+			account_id, entity_id, date, amount_cents, merchant_raw,
+			merchant_norm, category_id, status, excluded, dedup_hash
+		) VALUES (?, ?, '2026-07-16', -3000, 'Rent Example',
+			'Rent Example', 16, 'posted', 0, 'fixed-rent')
+	`, accountID, entityID); err != nil {
+		t.Fatalf("insert fixed rent transaction: %v", err)
+	}
+	return databasePath
+}
+
+func TestRunTrendsFixedVariableRendersTOONAndJSON(t *testing.T) {
+	t.Setenv(databasePathEnvironment, seedTrendFixedVariableCommandDB(t))
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
+
+	var stdout, stderr bytes.Buffer
+	code := runTrendsAt(
+		context.Background(),
+		[]string{"--metric", "fixed-variable"},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runTrendsAt() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"metric: fixed-variable",
+		"from: 2026-07-01",
+		"to: 2026-07-31",
+		"fixed: 30",
+		"variable: 50",
+		"unclassified: 20",
+		"total: 100",
+		"fixed_share: 0.3",
+		"by_bucket[3]{bucket,spend,count}:",
+		"fixed,30,1",
+		"variable,50,2",
+		"unclassified,20,1",
+		"heuristic: fixed = Rent and Utilities only; not recurring-based",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("fixed-variable output missing %q:\n%s", want, out)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runTrendsAt(
+		context.Background(),
+		[]string{
+			"--metric", "fixed-variable",
+			"--from", "2026-07-01",
+			"--to", "2026-07-31",
+			"--json",
+		},
+		&stdout,
+		&stderr,
+		now,
+	)
+	if code != 0 {
+		t.Fatalf("runTrendsAt(JSON) code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	jsonOutput := strings.TrimSpace(stdout.String())
+	wantSummary := `"summary":{"metric":"fixed-variable","from":"2026-07-01","to":"2026-07-31","fixed":30,"variable":50,"unclassified":20,"total":100,"fixed_share":0.3}`
+	if !strings.Contains(jsonOutput, wantSummary) ||
+		!strings.Contains(jsonOutput, `"by_bucket":[{"bucket":"fixed","spend":30,"count":1},{"bucket":"variable","spend":50,"count":2},{"bucket":"unclassified","spend":20,"count":1}]`) {
+		t.Errorf("fixed-variable JSON = %q", jsonOutput)
+	}
+}
+
+func TestRunTrendsFixedVariableEmptyUsesNullShare(t *testing.T) {
+	t.Setenv(databasePathEnvironment, filepath.Join(t.TempDir(), "moneta.db"))
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{
+		"trends", "--metric", "fixed-variable", "--period", "2026-07",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run() code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"fixed: 0",
+		"variable: 0",
+		"unclassified: 0",
+		"total: 0",
+		"fixed_share: null",
+		"by_bucket[3]{bucket,spend,count}:",
+		"fixed,0,0",
+		"no posted spending in this period",
+		"heuristic: fixed = Rent and Utilities only; not recurring-based",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("empty fixed-variable output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunTrendsHelpDocumentsFixedVariableHeuristic(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"trends", "--help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run(help) code = %d, want 0", code)
+	}
+	if !strings.Contains(stderr.String(),
+		"fixed-variable heuristic v1: fixed = Rent and Utilities only") {
+		t.Errorf("trends help does not document heuristic:\n%s", stderr.String())
+	}
+}
+
 func TestRunTrendsMerchantsRendersTOONAndJSON(t *testing.T) {
 	t.Setenv(databasePathEnvironment, seedSpendCommandDB(t, 0))
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
@@ -519,7 +649,7 @@ func TestRunTrendsUsageAndConfigErrors(t *testing.T) {
 		wantText string
 	}{
 		{"missing metric", []string{"trends", "--period", "2026-07"}, filepath.Join(t.TempDir(), "db"), "--metric is required"},
-		{"unknown metric", []string{"trends", "--metric", "fixed-variable"}, filepath.Join(t.TempDir(), "db"), "unknown --metric"},
+		{"unknown metric", []string{"trends", "--metric", "cards"}, filepath.Join(t.TempDir(), "db"), "unknown --metric"},
 		{"mom custom dates rejected", []string{"trends", "--metric", "mom", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "--metric mom requires --period"},
 		{"mom invalid period", []string{"trends", "--metric", "mom", "--period", "2026-13"}, filepath.Join(t.TempDir(), "db"), "valid YYYY-MM"},
 		{"merchants month and dates conflict", []string{"trends", "--metric", "merchants", "--period", "2026-07", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "cannot be combined"},
@@ -533,10 +663,15 @@ func TestRunTrendsUsageAndConfigErrors(t *testing.T) {
 		{"savings rejects history", []string{"trends", "--metric", "savings", "--history", "30d"}, filepath.Join(t.TempDir(), "db"), "--history is supported only"},
 		{"savings rejects row limit", []string{"trends", "--metric", "savings", "--full"}, filepath.Join(t.TempDir(), "db"), "--limit/--full are unsupported"},
 		{"savings month and dates conflict", []string{"trends", "--metric", "savings", "--period", "2026-07", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "cannot be combined"},
+		{"fixed-variable rejects history", []string{"trends", "--metric", "fixed-variable", "--history", "30d"}, filepath.Join(t.TempDir(), "db"), "--history is supported only"},
+		{"fixed-variable rejects row limit", []string{"trends", "--metric", "fixed-variable", "--limit", "3"}, filepath.Join(t.TempDir(), "db"), "--limit/--full are unsupported"},
+		{"fixed-variable rejects full", []string{"trends", "--metric", "fixed-variable", "--full"}, filepath.Join(t.TempDir(), "db"), "--limit/--full are unsupported"},
+		{"fixed-variable month and dates conflict", []string{"trends", "--metric", "fixed-variable", "--period", "2026-07", "--from", "2026-07-01", "--to", "2026-07-31"}, filepath.Join(t.TempDir(), "db"), "cannot be combined"},
 		{"mom missing database", []string{"trends", "--metric", "mom", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
 		{"merchants missing database", []string{"trends", "--metric", "merchants", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
 		{"utilization missing database", []string{"trends", "--metric", "utilization", "--history", "1d"}, "", "MONETA_DB_PATH or --db is required"},
 		{"savings missing database", []string{"trends", "--metric", "savings", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
+		{"fixed-variable missing database", []string{"trends", "--metric", "fixed-variable", "--period", "2026-07"}, "", "MONETA_DB_PATH or --db is required"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

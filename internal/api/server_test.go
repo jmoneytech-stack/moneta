@@ -174,6 +174,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/trends?metric=merchants&period=2026-07",
 		"/v1/trends?metric=utilization&history=1d",
 		"/v1/trends?metric=savings&period=2026-07",
+		"/v1/trends?metric=fixed-variable&period=2026-07",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
@@ -214,6 +215,7 @@ func TestAPIReadRoutes(t *testing.T) {
 		{"/v1/trends?metric=utilization&from=2026-07-22&to=2026-07-22", []string{`"metric":"utilization"`, `"days":1`, `"accounts":1`, `"missing_limit_days":0`, `"date":"2026-07-22"`, `"utilization":0.34`, `"debt":3400`, `"limit":10000`}},
 		{"/v1/trends?metric=utilization&period=2026-07", []string{`"metric":"utilization"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"days":31`, `"utilization":0.34`}},
 		{"/v1/trends?metric=savings&period=2026-07", []string{`"metric":"savings"`, `"count":3`, `"inflow":1000`, `"outflow":25`, `"net":975`, `"savings_rate":0.975`}},
+		{"/v1/trends?metric=fixed-variable&period=2026-07", []string{`"metric":"fixed-variable"`, `"fixed":0`, `"variable":25`, `"unclassified":0`, `"total":25`, `"fixed_share":0`}},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -233,6 +235,49 @@ func TestAPIReadRoutes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAPITrendFixedVariableReturnsExactBuckets(t *testing.T) {
+	db := openAPITestDB(t)
+	seedAPITestDB(t, db)
+	var accountID, entityID int64
+	if err := db.QueryRow(`
+		SELECT id, entity_id FROM accounts WHERE provider_account_id = 'acct-fake-1'
+	`).Scan(&accountID, &entityID); err != nil {
+		t.Fatalf("read fixed-variable fixture account: %v", err)
+	}
+	insert := func(amount int64, merchant string, category any, hash string) {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO transactions (
+				account_id, entity_id, date, amount_cents, merchant_raw,
+				merchant_norm, category_id, status, excluded, dedup_hash
+			) VALUES (?, ?, '2026-07-20', ?, ?, ?, ?, 'posted', 0, ?)
+		`, accountID, entityID, amount, merchant, merchant, category, hash); err != nil {
+			t.Fatalf("insert fixed-variable transaction %q: %v", hash, err)
+		}
+	}
+	insert(-5000, "Rent Example", int64(16), "api-fixed-rent")
+	insert(-2000, "Unknown Example", nil, "api-fixed-unclassified")
+
+	handler := newTestHandler(t, db, nil)
+	response := performRequest(
+		handler,
+		"/v1/trends?metric=fixed-variable&from=2026-07-01&to=2026-07-31",
+		testAPIKey,
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET fixed-variable = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	for _, want := range []string{
+		`"summary":{"metric":"fixed-variable","from":"2026-07-01","to":"2026-07-31","fixed":50,"variable":25,"unclassified":20,"total":95,"fixed_share":0.5263}`,
+		`"by_bucket":[{"bucket":"fixed","spend":50,"count":1},{"bucket":"variable","spend":25,"count":2},{"bucket":"unclassified","spend":20,"count":1}]`,
+		`"hint":"heuristic: fixed = Rent and Utilities only; not recurring-based"`,
+	} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Errorf("fixed-variable response missing %q: %s", want, response.Body.String())
+		}
 	}
 }
 
@@ -419,7 +464,7 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
 		{"/v1/debts?unexpected=value", "unknown query parameter"},
 		{"/v1/trends", "metric"},
-		{"/v1/trends?metric=fixed-variable", "unknown metric"},
+		{"/v1/trends?metric=cards", "unknown metric"},
 		{"/v1/trends?metric=mom&period=2026-13", "valid YYYY-MM"},
 		{"/v1/trends?metric=mom&from=2026-07-01&to=2026-07-31", "requires period"},
 		{"/v1/trends?metric=merchants&period=2026-13", "valid YYYY-MM"},
@@ -433,6 +478,10 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/trends?metric=savings&history=30d", "history is supported only"},
 		{"/v1/trends?metric=savings&full=true", "limit/full are unsupported"},
 		{"/v1/trends?metric=savings&period=2026-07&from=2026-07-01&to=2026-07-31", "cannot be combined"},
+		{"/v1/trends?metric=fixed-variable&history=30d", "history is supported only"},
+		{"/v1/trends?metric=fixed-variable&limit=3", "limit/full are unsupported"},
+		{"/v1/trends?metric=fixed-variable&full=true", "limit/full are unsupported"},
+		{"/v1/trends?metric=fixed-variable&period=2026-07&from=2026-07-01&to=2026-07-31", "cannot be combined"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {

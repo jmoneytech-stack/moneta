@@ -269,16 +269,16 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 		writeError(
 			writer,
 			http.StatusBadRequest,
-			"query parameter \"metric\" is required (supported: mom, merchants, utilization, savings)",
+			"query parameter \"metric\" is required (supported: mom, merchants, utilization, savings, fixed-variable)",
 		)
 		return
 	}
 	if metric != "mom" && metric != "merchants" && metric != "utilization" &&
-		metric != "savings" {
+		metric != "savings" && metric != "fixed-variable" {
 		writeError(
 			writer,
 			http.StatusBadRequest,
-			fmt.Sprintf("unknown metric %q (supported: mom, merchants, utilization, savings)", metric),
+			fmt.Sprintf("unknown metric %q (supported: mom, merchants, utilization, savings, fixed-variable)", metric),
 		)
 		return
 	}
@@ -292,6 +292,7 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 	var merchantsPeriod period
 	var utilizationPeriod period
 	var savingsPeriod period
+	var fixedVariablePeriod period
 	switch metric {
 	case "mom":
 		if historyProvided {
@@ -408,6 +409,24 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 			writeError(writer, http.StatusBadRequest, err.Error())
 			return
 		}
+	case "fixed-variable":
+		if historyProvided {
+			writeError(writer, http.StatusBadRequest, "history is supported only by metric utilization")
+			return
+		}
+		if _, ok := query["limit"]; ok {
+			writeError(writer, http.StatusBadRequest, "limit/full are unsupported by metric fixed-variable")
+			return
+		}
+		if _, ok := query["full"]; ok {
+			writeError(writer, http.StatusBadRequest, "limit/full are unsupported by metric fixed-variable")
+			return
+		}
+		fixedVariablePeriod, err = resolvePeriod(query, now)
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	account, err := queryValue(query, "account")
@@ -416,7 +435,7 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	limit := 0
-	if metric != "utilization" && metric != "savings" {
+	if metric != "utilization" && metric != "savings" && metric != "fixed-variable" {
 		limit, _, err = parseLimit(query)
 		if err != nil {
 			writeError(writer, http.StatusBadRequest, err.Error())
@@ -469,6 +488,18 @@ func (s *server) handleTrends(writer http.ResponseWriter, request *http.Request)
 			return
 		}
 		writeDocument(writer, buildTrendSavingsDocument(summary, filter))
+	case "fixed-variable":
+		filter := store.TrendFixedVariableFilter{
+			From:    fixedVariablePeriod.from,
+			To:      fixedVariablePeriod.to,
+			Account: account,
+		}
+		report, err := store.ReadTrendFixedVariable(request.Context(), s.db, filter)
+		if err != nil {
+			s.internalError(writer, "read fixed-variable trends", err)
+			return
+		}
+		writeDocument(writer, buildTrendFixedVariableDocument(report, filter))
 	}
 }
 

@@ -15,11 +15,14 @@ import (
 )
 
 const (
-	trendMetricMoM         = "mom"
-	trendMetricMerchants   = "merchants"
-	trendMetricUtilization = "utilization"
-	trendMetricSavings     = "savings"
-	trendMetricsHelp       = "mom, merchants, utilization, savings"
+	trendMetricMoM           = "mom"
+	trendMetricMerchants     = "merchants"
+	trendMetricUtilization   = "utilization"
+	trendMetricSavings       = "savings"
+	trendMetricFixedVariable = "fixed-variable"
+	trendMetricsHelp         = "mom, merchants, utilization, savings, fixed-variable"
+
+	fixedVariableHeuristicHint = "heuristic: fixed = Rent and Utilities only; not recurring-based"
 )
 
 // runTrends dispatches one compute-on-read trend metric. Each metric owns its
@@ -42,7 +45,12 @@ func runTrendsAt(
 		os.Getenv(databasePathEnvironment),
 		"SQLite database path (default MONETA_DB_PATH)",
 	)
-	metric := flags.String("metric", "", "trend metric (required; supported: "+trendMetricsHelp+")")
+	metric := flags.String(
+		"metric",
+		"",
+		"trend metric (required; supported: "+trendMetricsHelp+
+			"; fixed-variable heuristic v1: fixed = Rent and Utilities only)",
+	)
 	periodValue := flags.String(
 		"period",
 		"",
@@ -82,7 +90,8 @@ func runTrendsAt(
 		return 2
 	}
 	if *metric != trendMetricMoM && *metric != trendMetricMerchants &&
-		*metric != trendMetricUtilization && *metric != trendMetricSavings {
+		*metric != trendMetricUtilization && *metric != trendMetricSavings &&
+		*metric != trendMetricFixedVariable {
 		fmt.Fprintf(
 			stderr,
 			"error: unknown --metric %q (supported: %s)\n",
@@ -96,6 +105,7 @@ func runTrendsAt(
 	var merchantsFilter store.TrendMerchantsFilter
 	var utilizationFilter store.TrendUtilizationFilter
 	var savingsFilter store.CashflowFilter
+	var fixedVariableFilter store.TrendFixedVariableFilter
 	switch *metric {
 	case trendMetricMoM:
 		if provided["history"] {
@@ -174,6 +184,23 @@ func runTrendsAt(
 		savingsFilter = store.CashflowFilter{
 			From: period.From, To: period.To, Account: *account,
 		}
+	case trendMetricFixedVariable:
+		if provided["history"] {
+			fmt.Fprintln(stderr, "error: --history is supported only by --metric utilization")
+			return 2
+		}
+		if provided["limit"] || provided["full"] {
+			fmt.Fprintln(stderr, "error: --limit/--full are unsupported by --metric fixed-variable")
+			return 2
+		}
+		period, err := resolveReadPeriod(*periodValue, *from, *to, now)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+		fixedVariableFilter = store.TrendFixedVariableFilter{
+			From: period.From, To: period.To, Account: *account,
+		}
 	}
 
 	if *databasePath == "" {
@@ -222,6 +249,13 @@ func runTrendsAt(
 			return 1
 		}
 		document = buildTrendSavingsDoc(summary, savingsFilter)
+	case trendMetricFixedVariable:
+		report, err := store.ReadTrendFixedVariable(ctx, database, fixedVariableFilter)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		document = buildTrendFixedVariableDoc(report, fixedVariableFilter)
 	}
 
 	format := cli.FormatTOON
@@ -233,6 +267,45 @@ func runTrendsAt(
 		return 1
 	}
 	return 0
+}
+
+func buildTrendFixedVariableDoc(
+	report store.TrendFixedVariableReport,
+	filter store.TrendFixedVariableFilter,
+) toon.Object {
+	fixedShare := any(nil)
+	if value := cli.Ratio(report.Fixed.SpendCents, report.TotalCents, 4); value != nil {
+		fixedShare = *value
+	}
+	buckets := toon.Table{
+		Fields: []string{"bucket", "spend", "count"},
+		Rows: [][]any{
+			{"fixed", cli.Money(report.Fixed.SpendCents), report.Fixed.Count},
+			{"variable", cli.Money(report.Variable.SpendCents), report.Variable.Count},
+			{"unclassified", cli.Money(report.Unclassified.SpendCents), report.Unclassified.Count},
+		},
+	}
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "metric", Value: trendMetricFixedVariable},
+			{Key: "from", Value: filter.From},
+			{Key: "to", Value: filter.To},
+			{Key: "fixed", Value: cli.Money(report.Fixed.SpendCents)},
+			{Key: "variable", Value: cli.Money(report.Variable.SpendCents)},
+			{Key: "unclassified", Value: cli.Money(report.Unclassified.SpendCents)},
+			{Key: "total", Value: cli.Money(report.TotalCents)},
+			{Key: "fixed_share", Value: fixedShare},
+		}},
+		{Key: "by_bucket", Value: buckets},
+		{Key: "hint", Value: trendFixedVariableHint(report)},
+	}
+}
+
+func trendFixedVariableHint(report store.TrendFixedVariableReport) string {
+	if report.Count == 0 {
+		return "no posted spending in this period; " + fixedVariableHeuristicHint
+	}
+	return fixedVariableHeuristicHint
 }
 
 func buildTrendSavingsDoc(

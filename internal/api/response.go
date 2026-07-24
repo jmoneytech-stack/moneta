@@ -376,6 +376,47 @@ func debtsHint(report store.DebtReport) string {
 	return "run moneta networth to compare total debt with assets"
 }
 
+const fixedVariableHeuristicHint = "heuristic: fixed = Rent and Utilities only; not recurring-based"
+
+func buildTrendFixedVariableDocument(
+	report store.TrendFixedVariableReport,
+	filter store.TrendFixedVariableFilter,
+) toon.Object {
+	fixedShare := any(nil)
+	if value := cli.Ratio(report.Fixed.SpendCents, report.TotalCents, 4); value != nil {
+		fixedShare = *value
+	}
+	buckets := toon.Table{
+		Fields: []string{"bucket", "spend", "count"},
+		Rows: [][]any{
+			{"fixed", cli.Money(report.Fixed.SpendCents), report.Fixed.Count},
+			{"variable", cli.Money(report.Variable.SpendCents), report.Variable.Count},
+			{"unclassified", cli.Money(report.Unclassified.SpendCents), report.Unclassified.Count},
+		},
+	}
+	return toon.Object{
+		{Key: "summary", Value: toon.Object{
+			{Key: "metric", Value: "fixed-variable"},
+			{Key: "from", Value: filter.From},
+			{Key: "to", Value: filter.To},
+			{Key: "fixed", Value: cli.Money(report.Fixed.SpendCents)},
+			{Key: "variable", Value: cli.Money(report.Variable.SpendCents)},
+			{Key: "unclassified", Value: cli.Money(report.Unclassified.SpendCents)},
+			{Key: "total", Value: cli.Money(report.TotalCents)},
+			{Key: "fixed_share", Value: fixedShare},
+		}},
+		{Key: "by_bucket", Value: buckets},
+		{Key: "hint", Value: trendFixedVariableHint(report)},
+	}
+}
+
+func trendFixedVariableHint(report store.TrendFixedVariableReport) string {
+	if report.Count == 0 {
+		return "no posted spending in this period; " + fixedVariableHeuristicHint
+	}
+	return fixedVariableHeuristicHint
+}
+
 func buildTrendSavingsDocument(
 	summary store.CashflowSummary,
 	filter store.CashflowFilter,
