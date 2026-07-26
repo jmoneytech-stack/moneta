@@ -15,6 +15,7 @@ Phase 2 is complete.
 Phase 3 is complete: the D3-1 liability-sign and D3-2 nullable-money foundation, PR3's compute-on-read `networth --history`, PR4-PR8's `mom`, `merchants`, `utilization`, `savings`, and heuristic-v1 `fixed-variable` trend metrics, PR9's credit-card-only `moneta cards`, and PR10's composed `moneta dashboard`; all reads have authenticated REST mirrors.
 Loans stay in `moneta debts`; `moneta cards` is `credit_card` only.
 The dashboard is the explicit `moneta dashboard` subcommand (R3(b)/B1) - bare `moneta` still prints usage and exits 2 - and its `upcoming_bills` and `anomalies` slots are deliberate `null` placeholders for Phase 4 (R5/C1); never fabricate values for them.
+A follow-up polish pass moved the dashboard document into `internal/report` so the CLI and REST payloads are one definition and cannot drift.
 Do not begin Phase 4 (recurring detection, anomaly engine), the A2 `expense_class` taxonomy, or any later feature until explicitly requested by the maintainer.
 
 ## Working Rules
@@ -44,6 +45,7 @@ Do not begin Phase 4 (recurring detection, anomaly engine), the A2 `expense_clas
 - `docs/product-spec.md` - product frame: MVP, current priority, non-goals.
 - `docs/moneta-plan.md` - approved architecture: schema, provider interface, AXI commands, phases.
 - `docs/decisions/` - ADRs; decisions future agents should preserve.
+- `internal/report/` - documents whose CLI and REST payloads must stay identical (the dashboard today). Add a document here instead of writing a second builder in `internal/api`; most commands still keep a per-surface builder, which is fine while the two are allowed to differ.
 
 ## Done Means
 

@@ -262,6 +262,10 @@ Credit utilization is the card portfolio for "now": summed balances over summed 
 `as_of` is the latest balance date across accounts and is `null` rather than a fabricated today when no snapshot exists.
 The CLI exits 3 when any Item is `login_required`, matching `moneta status`, and still renders the full document first; REST returns 200 and reports the same state in the `sync` section.
 
+**Post-PR10 polish (landed).** The dashboard document is defined once in `internal/report` and called by both `cmd/moneta` and `internal/api`, replacing the two parallel builders and the duplicated `phase4_note` constant that PR10 shipped.
+Field names, ordering, and the `null` placeholders are unchanged; the CLI and REST payloads are now identical by construction rather than by matching tests, and the pre-existing parity tests stayed green untouched through the move.
+Other commands keep their per-surface builders, which is correct while those two surfaces are allowed to differ.
+
 ### Tests first
 ```
 TestDashboardComposesSections: asserts each section reads from its underlying store fn; bills/anomaly
