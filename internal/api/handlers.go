@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jmoneytech-stack/moneta/internal/canon"
+	"github.com/jmoneytech-stack/moneta/internal/report"
 	"github.com/jmoneytech-stack/moneta/internal/store"
 )
 
@@ -546,7 +547,7 @@ func (s *server) handleDashboard(writer http.ResponseWriter, request *http.Reque
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
-	report, err := store.ReadDashboard(request.Context(), s.db, store.DashboardFilter{
+	dashboard, err := store.ReadDashboard(request.Context(), s.db, store.DashboardFilter{
 		From: month.from,
 		To:   month.to,
 	})
@@ -554,7 +555,7 @@ func (s *server) handleDashboard(writer http.ResponseWriter, request *http.Reque
 		s.internalError(writer, "read dashboard", err)
 		return
 	}
-	writeDocument(writer, buildDashboardDocument(report))
+	writeDocument(writer, report.Dashboard(dashboard))
 }
 
 func (s *server) internalError(writer http.ResponseWriter, operation string, err error) {

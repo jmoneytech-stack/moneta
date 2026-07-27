@@ -44,6 +44,7 @@ moneta/
     rmcsv/               Phase 2+ CSV provider, not yet present
   internal/toon/         TOON encoder
   internal/cli/          AXI command implementations
+  internal/report/       documents both the CLI and REST emit, defined once
   internal/api/          net/http REST (127.0.0.1, X-API-Key)
   internal/secret/       AES-GCM seal/open
 ```
