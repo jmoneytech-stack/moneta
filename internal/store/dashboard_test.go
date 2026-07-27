@@ -101,6 +101,37 @@ func TestReadDashboardComposesStoreReads(t *testing.T) {
 	}
 }
 
+func TestReadDashboardUtilizationFloorsOverpayAndPrefersSnapshotLimit(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	entityID := insertEntity(t, db, "personal", "Personal")
+	overpayID := insertAccountFull(t, db, entityID, "Overpaid Card", "credit_card", "card-overpay")
+	dualLimitID := insertAccountFull(t, db, entityID, "Dual Limit Card", "credit_card", "card-dual")
+	if _, err := db.Exec(`
+		INSERT INTO credit_terms (account_id, limit_cents) VALUES (?, 10000), (?, 1000000)
+	`, overpayID, dualLimitID); err != nil {
+		t.Fatalf("insert credit terms: %v", err)
+	}
+	insertUtilizationSnapshot(t, db, overpayID, "2026-07-22", -5000, nil)
+	insertUtilizationSnapshot(t, db, dualLimitID, "2026-07-22", 200000, int64(800000))
+
+	report, err := ReadDashboard(ctx, db, DashboardFilter{From: "2026-07-01", To: "2026-07-31"})
+	if err != nil {
+		t.Fatalf("ReadDashboard() error: %v", err)
+	}
+	// The overpaid card floors to zero debt, and the dual-limit card uses its
+	// snapshot limit rather than credit_terms.
+	if report.UtilizationCards != 2 ||
+		report.UtilizationDebtCents != 200000 || report.UtilizationLimitCents != 810000 {
+		t.Errorf("utilization inputs = %d cards, %d debt, %d limit, want 2, 200000, 810000",
+			report.UtilizationCards, report.UtilizationDebtCents, report.UtilizationLimitCents)
+	}
+	// Signed card debt is unchanged: the overpay credit still reduces what is owed.
+	if report.CardCount != 2 || report.CardDebtCents != 195000 {
+		t.Errorf("cards = %d owing %d, want 2 owing 195000", report.CardCount, report.CardDebtCents)
+	}
+}
+
 func TestReadDashboardEmptyDatabaseAndValidation(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

@@ -212,21 +212,20 @@ func ReadTrendUtilization(
 			if !entry.hasSnapshot {
 				continue
 			}
-			limit := entry.current.limitCents
-			if limit == nil {
-				limit = entry.fallbackLimit
-			}
-			if limit == nil || *limit <= 0 {
+			debt, limit, ok := utilizationContribution(
+				entry.current.currentCents,
+				entry.current.limitCents,
+				entry.fallbackLimit,
+			)
+			if !ok {
 				missingLimit = true
 				continue
 			}
-			if err := addTrendCents(&point.LimitCents, *limit); err != nil {
+			if err := addTrendCents(&point.LimitCents, limit); err != nil {
 				return report, err
 			}
-			if entry.current.currentCents > 0 {
-				if err := addTrendCents(&point.DebtCents, entry.current.currentCents); err != nil {
-					return report, err
-				}
+			if err := addTrendCents(&point.DebtCents, debt); err != nil {
+				return report, err
 			}
 			point.Accounts++
 		}

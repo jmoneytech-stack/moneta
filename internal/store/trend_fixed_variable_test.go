@@ -11,23 +11,24 @@ func TestReadTrendFixedVariableClassifiesSpendAndExcludesNonSpend(t *testing.T) 
 	entityID := insertEntity(t, db, "personal", "Personal")
 	accountID := insertAccountFull(t, db, entityID, "Everyday Checking", "checking", "acct-fixed-variable")
 
-	// Exercise the stable-name fallback independently from the seeded ID 16.
-	nameFallbackResult, err := db.Exec(`
+	// The heuristic matches by name only: a non-seed child category with the
+	// same name is fixed, independent of any category ID.
+	nameMatchResult, err := db.Exec(`
 		INSERT INTO categories (name, parent_id, kind)
 		VALUES ('Rent and Utilities', 7, 'expense')
 	`)
 	if err != nil {
-		t.Fatalf("insert fixed-name fallback category: %v", err)
+		t.Fatalf("insert fixed-name match category: %v", err)
 	}
-	nameFallbackID, err := nameFallbackResult.LastInsertId()
+	nameMatchID, err := nameMatchResult.LastInsertId()
 	if err != nil {
-		t.Fatalf("fixed-name fallback category id: %v", err)
+		t.Fatalf("fixed-name match category id: %v", err)
 	}
 
 	insertSpendTransaction(t, db, accountID, entityID,
-		"2026-07-02", -5000, "Rent Example", int64(16), "posted", 0, "fixed-id")
+		"2026-07-02", -5000, "Rent Example", int64(16), "posted", 0, "fixed-seed")
 	insertSpendTransaction(t, db, accountID, entityID,
-		"2026-07-03", -2000, "Utility Example", nameFallbackID, "posted", 0, "fixed-name")
+		"2026-07-03", -2000, "Utility Example", nameMatchID, "posted", 0, "fixed-name")
 	insertSpendTransaction(t, db, accountID, entityID,
 		"2026-07-04", -3000, "Food Example", int64(7), "posted", 0, "variable")
 	insertSpendTransaction(t, db, accountID, entityID,

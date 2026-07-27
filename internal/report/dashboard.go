@@ -78,10 +78,10 @@ func dashboardAsOf(dashboard store.DashboardReport) any {
 	return dashboard.AsOf
 }
 
-// dashboardUtilization is the credit-card portfolio ratio for "now": summed
-// balances over summed limits across cards that have both a balance snapshot
-// and a positive limit. It is null when no card qualifies, so a missing limit
-// never reads as 0%.
+// dashboardUtilization is the credit-card portfolio ratio for "now", built
+// from the shared store definition (snapshot limit preferred, overpaid
+// balances floored to zero debt). It is null when no card qualifies, so a
+// missing limit never reads as 0%.
 func dashboardUtilization(dashboard store.DashboardReport) any {
 	if dashboard.UtilizationCards == 0 {
 		return nil

@@ -200,7 +200,7 @@ TestNetworthHistoryWindowBounds (cmd): --history 90d inclusive/exclusive ends ma
 **PR5 status:** `merchants` is implemented with spend-style period windows, exact `merchant_norm` grouping, one unknown bucket, spend ordering, CLI TOON/JSON, and authenticated REST.
 **PR6 status:** `utilization` is implemented as a carried-forward daily credit-card portfolio series with a 30-day default, alternative history/month/custom windows, nullable snapshot-limit handling with current-terms fallback, integer-ratio output, and authenticated REST.
 **PR7 status:** `savings` is implemented as a summary-only projection over the existing cashflow store aggregation, with cashflow-style period windows, integer-ratio output, CLI TOON/JSON, and authenticated REST.
-**PR8 status:** `fixed-variable` is implemented as heuristic v1 over spend-filtered outflows: seeded category ID 16 or exact `Rent and Utilities` name is fixed, NULL category is unclassified, and every other categorized row is variable.
+**PR8 status:** `fixed-variable` is implemented as heuristic v1 over spend-filtered outflows: the exact category name `Rent and Utilities` is fixed (name-only match, no seeded-ID reliance), NULL category is unclassified, and every other categorized row is variable.
 It returns summary totals, integer fixed share, a fixed three-row bucket table, CLI TOON/JSON, and authenticated REST.
 
 New `moneta trends` command + `/v1/trends`, following AXI conventions (summary, per-row, truncation, hint, `--json`). Reuses `spend`/`cashflow` exclusion + period helpers. Each `--metric` is its **own PR** on this template:
@@ -295,7 +295,7 @@ TestDashboardComposesSections: asserts each section reads from its underlying st
 
 - **R1 (resolved by PR1).** Plaid documentation and its published Sandbox `/liabilities/get` response confirm positive-when-owed current balances for credit-card and loan accounts. Migration `000003` is therefore a documented no-op that preserves existing negative credits.
 - **R2 (accepted limitation).** D3-2 cannot reclassify historical sentinel-0 optional-money rows to NULL (a stored `0` is ambiguous between "real zero" and "was missing"). Utilization for accounts whose limit predates PR2 stays sentinel-0 until a fresh sync overwrites that account's *current-day* row with NULL; historical days remain sentinel-0. PR6 treats a stored zero as an authoritative non-positive snapshot limit, excludes that card-day, and does not replace it with the current-terms fallback. Go-forward only, by design.
-- **R3(a) (resolved by PR8).** Fixed-variable is static heuristic v1, not recurring detection: seeded category ID 16 or exact name `Rent and Utilities` is fixed, NULL category is unclassified, and every other categorized outflow that passes spend filters is variable.
+- **R3(a) (resolved by PR8, name-only match settled post-review).** Fixed-variable is static heuristic v1, not recurring detection: the exact category name `Rent and Utilities` is fixed, NULL category is unclassified, and every other categorized outflow that passes spend filters is variable.
   The taxonomy is not user-editable in PR8.
   Future A2 replaces the static heuristic with a persisted classification such as `categories.expense_class` (or equivalent) and must not change the `trends --metric fixed-variable` fields (`fixed`, `variable`, `unclassified`, `fixed_share`), so the CLI and REST shape stays stable across the swap.
 - **R3(b) (resolved as B1 by PR10).** The dashboard is an explicit `moneta dashboard` subcommand, not the no-arg default.
