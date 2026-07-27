@@ -137,15 +137,17 @@ func TestReadTrendUtilizationFallsBackOnlyForNullSnapshotLimit(t *testing.T) {
 	}
 	insertUtilizationSnapshot(t, db, cardID, "2026-07-01", 100000, nil)
 	insertUtilizationSnapshot(t, db, cardID, "2026-07-02", 200000, int64(0))
+	// A non-NULL snapshot limit beats credit_terms even when they differ.
+	insertUtilizationSnapshot(t, db, cardID, "2026-07-03", 200000, int64(750000))
 
 	report, err := ReadTrendUtilization(ctx, db, TrendUtilizationFilter{
 		From: "2026-07-01",
-		To:   "2026-07-02",
+		To:   "2026-07-03",
 	})
 	if err != nil {
 		t.Fatalf("ReadTrendUtilization() error: %v", err)
 	}
-	if report.MissingLimitDays != 1 || len(report.Points) != 2 {
+	if report.MissingLimitDays != 1 || len(report.Points) != 3 {
 		t.Fatalf("report = %+v, want one missing-limit day", report)
 	}
 	first := report.Points[0]
@@ -157,6 +159,11 @@ func TestReadTrendUtilizationFallsBackOnlyForNullSnapshotLimit(t *testing.T) {
 	if second.HasUtilization || second.DebtCents != 0 ||
 		second.LimitCents != 0 || second.Accounts != 0 {
 		t.Errorf("stored-zero point = %+v, want undefined without fallback", second)
+	}
+	third := report.Points[2]
+	if !third.HasUtilization || third.DebtCents != 200000 ||
+		third.LimitCents != 750000 || third.Accounts != 1 {
+		t.Errorf("snapshot-limit point = %+v, want 200000/750000", third)
 	}
 }
 

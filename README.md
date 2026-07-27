@@ -179,7 +179,7 @@ The metric is summary-only, so `--history`, `--limit`, and `--full` are rejected
 The `fixed-variable` metric is heuristic v1, not recurring detection or a user-editable taxonomy.
 It uses the same current-month default, explicit calendar month, or complete inclusive custom date pair as `moneta spend`.
 It applies the exact spend filters: posted, `excluded = 0`, and negative amounts only.
-A row is fixed when its category ID is the seeded `Rent and Utilities` ID 16 or its category name is exactly `Rent and Utilities`.
+A row is fixed when its category name is exactly `Rent and Utilities`; matching is by name only and does not depend on seeded category IDs.
 A row with a NULL `category_id` is unclassified, and every other categorized row that passes the spend filters is variable.
 The summary reports positive fixed, variable, unclassified, and total spend magnitudes plus `fixed_share = cli.Ratio(fixed, total, 4)`; the share is `null` when total is zero.
 The fixed three-row `by_bucket` table also reports transaction counts, so `--history`, `--limit`, and `--full` are rejected.
@@ -304,7 +304,8 @@ hint: run moneta spend or moneta trends for the breakdown behind these totals
 `moneta dashboard` is an explicit subcommand; bare `moneta` still prints usage and exits 2.
 `as_of` is the latest balance date across accounts and is `null` when no account has a snapshot yet, rather than a fabricated today.
 `cash` counts checking and savings latest balances only, so investments and other assets contribute to `networth` but not to `cash`.
-`credit.utilization` is the card portfolio for now: summed balances over summed limits across cards that have both a balance snapshot and a positive limit, and `null` when no card qualifies, so a missing limit never reads as 0%.
+`credit.utilization` is the card portfolio for now, sharing one store-level definition with the utilization trend: a non-NULL snapshot `limit_cents` wins over `credit_terms.limit_cents`, an overpaid (negative) balance contributes zero debt rather than reducing the portfolio, and cards without a snapshot or a positive usable limit are excluded.
+It is `null` when no card qualifies, so a missing limit never reads as 0%.
 `spend_month` and `cashflow_month` cover the current calendar month in the host's local timezone and reuse the same posted, non-excluded rules as `moneta spend` and `moneta cashflow`.
 `sync` reports Item counts only; per-Item detail stays in `moneta status`.
 

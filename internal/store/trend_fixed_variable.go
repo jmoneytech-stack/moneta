@@ -7,10 +7,10 @@ import (
 	"math"
 )
 
-const (
-	fixedExpenseCategoryID   int64 = 16
-	fixedExpenseCategoryName       = "Rent and Utilities"
-)
+// fixedExpenseCategoryName is the entire heuristic-v1 rule: a category with
+// exactly this name is fixed. Matching is by name only, so the rule does not
+// depend on seeded category IDs surviving taxonomy edits.
+const fixedExpenseCategoryName = "Rent and Utilities"
 
 // TrendFixedVariableFilter selects one inclusive period and an optional
 // literal account-name substring for the fixed-variable heuristic.
@@ -38,8 +38,8 @@ type TrendFixedVariableReport struct {
 
 // ReadTrendFixedVariable applies the v1 static category heuristic to the same
 // posted, non-excluded outflows as ReadSpend. A NULL category is unclassified;
-// category ID 16 or the exact stable name Rent and Utilities is fixed; every
-// other categorized row that passed the spend filter is variable.
+// the exact category name Rent and Utilities is fixed; every other categorized
+// row that passed the spend filter is variable.
 func ReadTrendFixedVariable(
 	ctx context.Context,
 	db *sql.DB,
@@ -92,7 +92,7 @@ func ReadTrendFixedVariable(
 		switch {
 		case !categoryID.Valid:
 			bucket = &report.Unclassified
-		case categoryID.Int64 == fixedExpenseCategoryID || categoryName == fixedExpenseCategoryName:
+		case categoryName == fixedExpenseCategoryName:
 			bucket = &report.Fixed
 		}
 		if err := addTrendCents(&bucket.SpendCents, -amount); err != nil {

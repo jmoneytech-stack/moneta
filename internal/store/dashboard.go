@@ -46,8 +46,10 @@ type DashboardReport struct {
 	CardCount     int
 	CardDebtCents int64
 
-	// Portfolio utilization inputs, restricted to cards that have both a
-	// balance snapshot and a positive limit. All zero means undefined.
+	// Portfolio utilization inputs come from ReadPortfolioUtilization, the
+	// shared definition with the utilization trend: snapshot limit preferred
+	// over credit_terms, overpaid balances floored to zero debt, cards with
+	// no snapshot or no positive usable limit excluded. All zero is undefined.
 	UtilizationCards      int
 	UtilizationDebtCents  int64
 	UtilizationLimitCents int64
@@ -108,18 +110,14 @@ func ReadDashboard(
 	}
 	report.CardCount = cards.Count
 	report.CardDebtCents = cards.TotalDebtCents
-	for _, card := range cards.Debts {
-		if card.BalanceCents == nil || card.LimitCents == nil || *card.LimitCents <= 0 {
-			continue
-		}
-		if err := addTrendCents(&report.UtilizationDebtCents, *card.BalanceCents); err != nil {
-			return report, fmt.Errorf("total dashboard card debt: %w", err)
-		}
-		if err := addTrendCents(&report.UtilizationLimitCents, *card.LimitCents); err != nil {
-			return report, fmt.Errorf("total dashboard card limits: %w", err)
-		}
-		report.UtilizationCards++
+
+	portfolio, err := ReadPortfolioUtilization(ctx, db)
+	if err != nil {
+		return report, fmt.Errorf("read dashboard portfolio utilization: %w", err)
 	}
+	report.UtilizationCards = portfolio.Cards
+	report.UtilizationDebtCents = portfolio.DebtCents
+	report.UtilizationLimitCents = portfolio.LimitCents
 
 	// The dashboard renders the spend summary only, so the group limit is
 	// minimal; ReadSpend's summary totals are independent of any row limit.
