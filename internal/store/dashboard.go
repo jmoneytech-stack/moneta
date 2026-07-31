@@ -54,9 +54,10 @@ type DashboardReport struct {
 	UtilizationDebtCents  int64
 	UtilizationLimitCents int64
 
-	Spend    SpendSummary
-	Cashflow CashflowSummary
-	Sync     DashboardSync
+	Spend           SpendSummary
+	Cashflow        CashflowSummary
+	Sync            DashboardSync
+	RecurringDetect DetectorState
 }
 
 // isDepositoryAccountType reports whether a canonical type counts as spendable
@@ -146,5 +147,10 @@ func ReadDashboard(
 			report.Sync.LoginRequired++
 		}
 	}
+	detector, err := ReadDetectorState(ctx, db)
+	if err != nil {
+		return report, fmt.Errorf("read dashboard recurring detector: %w", err)
+	}
+	report.RecurringDetect = detector
 	return report, nil
 }

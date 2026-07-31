@@ -26,7 +26,12 @@ func (s *server) handleStatus(writer http.ResponseWriter, request *http.Request)
 		s.internalError(writer, "read status", err)
 		return
 	}
-	writeDocument(writer, buildStatusDocument(items, limit, full))
+	detector, err := store.ReadDetectorState(request.Context(), s.db)
+	if err != nil {
+		s.internalError(writer, "read detector status", err)
+		return
+	}
+	writeDocument(writer, buildStatusDocument(items, detector, limit, full))
 }
 
 func (s *server) handleAccounts(writer http.ResponseWriter, request *http.Request) {

@@ -241,6 +241,29 @@ func TestAPIReadRoutes(t *testing.T) {
 	}
 }
 
+func TestAPIStatusIncludesDetectorState(t *testing.T) {
+	db := openAPITestDB(t)
+	seedAPITestDB(t, db)
+	if err := store.UpsertDetectorState(context.Background(), db, store.DetectorState{
+		Status:              "error",
+		LastRunAt:           "2026-08-15T12:00:00.000Z",
+		LastSuccessAt:       "2026-08-01T12:00:00.000Z",
+		LastError:           "recurring detection failed",
+		LastSkippedOverflow: 3,
+	}); err != nil {
+		t.Fatalf("seed detector state: %v", err)
+	}
+	handler := newTestHandler(t, db, nil)
+	response := performRequest(handler, "/v1/status", testAPIKey)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	want := `"detector":{"status":"error","last_run_at":"2026-08-15T12:00:00.000Z","last_success_at":"2026-08-01T12:00:00.000Z","last_skipped_overflow":3,"last_error":"recurring detection failed"}`
+	if !strings.Contains(response.Body.String(), want) {
+		t.Errorf("status response missing detector state %q: %s", want, response.Body.String())
+	}
+}
+
 func TestAPIDashboardComposesSectionsWithPlaceholders(t *testing.T) {
 	db := openAPITestDB(t)
 	seedAPITestDB(t, db)

@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/jmoneytech-stack/moneta/internal/cli"
+	"github.com/jmoneytech-stack/moneta/internal/report"
 	"github.com/jmoneytech-stack/moneta/internal/store"
 	"github.com/jmoneytech-stack/moneta/internal/toon"
 )
@@ -68,12 +69,19 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
+	detector, err := store.ReadDetectorState(ctx, database)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	format := cli.FormatTOON
 	if *asJSON {
 		format = cli.FormatJSON
 	}
-	if err := cli.Render(stdout, buildStatusDoc(items, *limit, *full), format); err != nil {
+	if err := cli.Render(
+		stdout, buildStatusDoc(items, detector, *limit, *full), format,
+	); err != nil {
 		fmt.Fprintf(stderr, "error: render status: %v\n", err)
 		return 1
 	}
@@ -89,7 +97,12 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 // buildStatusDoc shapes the status document: a summary block with
 // pre-computed counts, one items table, an optional truncation line, and a
 // next-step hint. Counts and timestamps only; no amounts or account names.
-func buildStatusDoc(items []store.ProviderItemStatus, limit int, full bool) toon.Object {
+func buildStatusDoc(
+	items []store.ProviderItemStatus,
+	detector store.DetectorState,
+	limit int,
+	full bool,
+) toon.Object {
 	accounts := 0
 	attention := 0
 	for _, item := range items {
@@ -128,6 +141,7 @@ func buildStatusDoc(items []store.ProviderItemStatus, limit int, full bool) toon
 			{Key: "accounts", Value: accounts},
 			{Key: "needs_attention", Value: attention},
 		}},
+		{Key: "detector", Value: report.Detector(detector, true)},
 		{Key: "items", Value: table},
 	}
 	if len(shown) < len(items) {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jmoneytech-stack/moneta/internal/store"
 )
@@ -79,6 +80,71 @@ func TestRunStatusJSONFormat(t *testing.T) {
 	}
 	if !strings.HasSuffix(out, "}") || strings.Contains(out, "\n") {
 		t.Errorf("status --json should be one compact line: %q", out)
+	}
+}
+
+func TestStatusAndDashboardSurfaceDetectorState(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "moneta.db")
+	t.Setenv(databasePathEnvironment, databasePath)
+	ctx := context.Background()
+	db, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatalf("open detector status database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close detector status database: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run(ctx, []string{"status", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("never-run status code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(),
+		`"detector":{"status":"never_run","last_run_at":null,"last_success_at":null,"last_skipped_overflow":0}`,
+	) {
+		t.Errorf("never-run status missing exact detector object: %s", stdout.String())
+	}
+
+	db, err = store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatalf("reopen detector status database: %v", err)
+	}
+	if err := store.UpsertDetectorState(ctx, db, store.DetectorState{
+		Status:              "partial",
+		LastRunAt:           "2026-08-15T12:00:00.000Z",
+		LastSuccessAt:       "2026-08-01T12:00:00.000Z",
+		LastSkippedOverflow: 2,
+	}); err != nil {
+		t.Fatalf("seed partial detector state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close partial detector database: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run(ctx, []string{"status", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("partial status code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(),
+		`"detector":{"status":"partial","last_run_at":"2026-08-15T12:00:00.000Z","last_success_at":"2026-08-01T12:00:00.000Z","last_skipped_overflow":2}`,
+	) {
+		t.Errorf("partial status missing detector object: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runDashboardAt(ctx, []string{"--json"}, &stdout, &stderr,
+		time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC))
+	if code != 0 {
+		t.Fatalf("partial dashboard code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(),
+		`"recurring_detect":{"status":"partial","last_run_at":"2026-08-15T12:00:00.000Z","last_success_at":"2026-08-01T12:00:00.000Z","last_skipped_overflow":2}`,
+	) {
+		t.Errorf("dashboard missing recurring_detect: %s", stdout.String())
 	}
 }
 

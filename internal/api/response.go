@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/jmoneytech-stack/moneta/internal/cli"
+	"github.com/jmoneytech-stack/moneta/internal/report"
 	"github.com/jmoneytech-stack/moneta/internal/store"
 	"github.com/jmoneytech-stack/moneta/internal/toon"
 )
@@ -30,7 +31,12 @@ func writeError(writer http.ResponseWriter, status int, message string) {
 	}{Error: message})
 }
 
-func buildStatusDocument(items []store.ProviderItemStatus, limit int, full bool) toon.Object {
+func buildStatusDocument(
+	items []store.ProviderItemStatus,
+	detector store.DetectorState,
+	limit int,
+	full bool,
+) toon.Object {
 	accounts := 0
 	attention := 0
 	for _, item := range items {
@@ -59,6 +65,7 @@ func buildStatusDocument(items []store.ProviderItemStatus, limit int, full bool)
 			{Key: "accounts", Value: accounts},
 			{Key: "needs_attention", Value: attention},
 		}},
+		{Key: "detector", Value: report.Detector(detector, true)},
 		{Key: "items", Value: table},
 	}
 	if len(shown) < len(items) {
