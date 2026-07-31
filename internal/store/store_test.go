@@ -27,8 +27,8 @@ func TestOpenAppliesInitialSchemaIdempotently(t *testing.T) {
 	if err := db.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 4 {
-		t.Fatalf("migration count = %d, want 4", migrationCount)
+	if migrationCount != 5 {
+		t.Fatalf("migration count = %d, want 5", migrationCount)
 	}
 
 	for _, table := range []string{
@@ -38,6 +38,7 @@ func TestOpenAppliesInitialSchemaIdempotently(t *testing.T) {
 		"categories",
 		"category_mappings",
 		"credit_terms",
+		"detector_state",
 		"entities",
 		"entity_rules",
 		"import_runs",
@@ -83,7 +84,7 @@ func TestInitialSchemaUsesIntegerMoneyColumns(t *testing.T) {
 			"loan_cents", "investment_cents", "asset_cents",
 		},
 		"recurring_items": {
-			"expected_cents",
+			"expected_cents", "last_matched_cents",
 		},
 		"transactions": {
 			"amount_cents",
