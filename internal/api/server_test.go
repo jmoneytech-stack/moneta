@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -176,6 +177,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/cards",
 		"/v1/recurring",
 		"/v1/bills",
+		"/v1/anomalies",
 		"/v1/dashboard",
 		"/v1/trends?metric=mom&period=2026-07",
 		"/v1/trends?metric=merchants&period=2026-07",
@@ -219,6 +221,7 @@ func TestAPIReadRoutes(t *testing.T) {
 		{"/v1/cards", []string{`"count":1`, `"total_debt":3400`, `"missing_balance":0`, `"name":"Credit Example"`, `"limit":10000`, `"utilization":0.34`, `"apr":0.2299`, `"due_day":15`}},
 		{"/v1/recurring", []string{`"detector":{"status":"never_run"`, `"recurring":[]`}},
 		{"/v1/bills", []string{`"detector":{"status":"never_run"`, `"count":1`, `"name":"Credit Example"`, `"source":"card_due"`}},
+		{"/v1/anomalies", []string{`"count":0`, `"skipped_overflow":0`, `"anomalies":[]`}},
 		{"/v1/trends?metric=mom&period=2026-07", []string{`"metric":"mom"`, `"spend_this":25`, `"spend_prev":15`, `"delta":10`, `"category":"Food and Drink"`}},
 		{"/v1/trends?metric=merchants&period=2026-07", []string{`"metric":"merchants"`, `"spend":25`, `"count":2`, `"merchants":2`, `"merchant":"Grocery Mart"`, `"merchant":"Cafe Example"`}},
 		{"/v1/trends?metric=merchants&from=2026-07-01&to=2026-07-31", []string{`"metric":"merchants"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"spend":25`, `"count":2`}},
@@ -388,6 +391,88 @@ func TestAPIBillsMirrorsCLI(t *testing.T) {
 	}
 	if response := performRequest(handler, "/v1/bills", "wrong-key"); response.Code != http.StatusUnauthorized {
 		t.Errorf("unauthorized bills status = %d, want 401", response.Code)
+	}
+}
+
+func TestAPIAnomaliesMirrorsCLI(t *testing.T) {
+	db := openAPITestDB(t)
+	ctx := context.Background()
+	entityID, err := store.EnsureDefaultEntity(ctx, db)
+	if err != nil {
+		t.Fatalf("EnsureDefaultEntity() error: %v", err)
+	}
+	accountResult, err := db.Exec(`
+		INSERT INTO accounts (
+			entity_id, type, name, provider, provider_account_id
+		) VALUES (?, 'checking', 'Anomaly Checking', 'plaid', 'api-anomaly-checking')
+	`, entityID)
+	if err != nil {
+		t.Fatalf("seed anomaly account: %v", err)
+	}
+	accountID, err := accountResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("anomaly account id: %v", err)
+	}
+	categoryResult, err := db.Exec(`
+		INSERT INTO categories (name, kind) VALUES ('API Anomaly Example', 'expense')
+	`)
+	if err != nil {
+		t.Fatalf("seed anomaly category: %v", err)
+	}
+	categoryID, err := categoryResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("anomaly category id: %v", err)
+	}
+	for index, fixture := range []struct {
+		date   string
+		amount int64
+	}{
+		{"2026-01-15", -10000}, {"2026-02-15", -10000},
+		{"2026-03-15", -10000}, {"2026-04-15", -31000},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO transactions (
+				account_id, entity_id, date, amount_cents, category_id,
+				status, excluded, is_transfer, dedup_hash
+			) VALUES (?, ?, ?, ?, ?, 'posted', 0, 0, ?)
+		`, accountID, entityID, fixture.date, fixture.amount, categoryID,
+			fmt.Sprintf("api-anomaly-%d", index)); err != nil {
+			t.Fatalf("seed anomaly transaction: %v", err)
+		}
+	}
+	fixedNow := time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC)
+	s := &server{
+		db: db, apiKeyHash: sha256.Sum256([]byte(testAPIKey)),
+		logger: log.New(io.Discard, "", 0), now: func() time.Time { return fixedNow },
+	}
+	handler := s.authenticate(s.recoverPanics(http.HandlerFunc(s.handleAnomalies)))
+	response := performRequest(handler, "/v1/anomalies?period=2026-04", testAPIKey)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/anomalies = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	storeReport, err := store.ReadAnomalies(ctx, db, "2026-05-20", "2026-04")
+	if err != nil {
+		t.Fatalf("ReadAnomalies() expected document: %v", err)
+	}
+	var expected bytes.Buffer
+	if err := cli.Render(&expected, report.Anomalies(storeReport), cli.FormatJSON); err != nil {
+		t.Fatalf("render expected anomalies JSON: %v", err)
+	}
+	if response.Body.String() != expected.String() {
+		t.Errorf("API anomalies != shared CLI document:\nAPI: %s\nCLI: %s",
+			response.Body.String(), expected.String())
+	}
+	for _, path := range []string{
+		"/v1/anomalies?period=2026-06", "/v1/anomalies?period=2026-13",
+		"/v1/anomalies?period=2026-04&period=2026-03", "/v1/anomalies?unknown=1",
+	} {
+		response := performRequest(handler, path, testAPIKey)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("GET %s = %d, want 400: %s", path, response.Code, response.Body.String())
+		}
+	}
+	if response := performRequest(handler, "/v1/anomalies", "wrong-key"); response.Code != http.StatusUnauthorized {
+		t.Errorf("unauthorized anomalies status = %d, want 401", response.Code)
 	}
 }
 
@@ -710,6 +795,7 @@ func TestAPIReturnsJSONForUnknownPathsAndMethods(t *testing.T) {
 		{http.MethodPost, "/v1/status", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
 		{http.MethodPost, "/v1/recurring", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
 		{http.MethodPost, "/v1/bills", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
+		{http.MethodPost, "/v1/anomalies", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
 	}
 	for _, test := range tests {
 		request := httptest.NewRequest(test.method, test.path, nil)
@@ -752,6 +838,8 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/recurring?unexpected=value", "unknown query parameter"},
 		{"/v1/bills?days=0", "integer from 1 to 366"},
 		{"/v1/bills?unexpected=value", "unknown query parameter"},
+		{"/v1/anomalies?period=9999-12", "must not be in the future"},
+		{"/v1/anomalies?unexpected=value", "unknown query parameter"},
 		{"/v1/dashboard?unexpected=value", "unknown query parameter"},
 		{"/v1/trends", "metric"},
 		{"/v1/trends?metric=cards", "unknown metric"},

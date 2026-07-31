@@ -536,6 +536,34 @@ func (s *server) handleCards(writer http.ResponseWriter, request *http.Request) 
 	writeDocument(writer, buildCardsDocument(report))
 }
 
+func (s *server) handleAnomalies(writer http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	if err := validateQueryKeys(query, "period"); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	period, err := queryValue(query, "period")
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	now := time.Now()
+	if s.now != nil {
+		now = s.now()
+	}
+	asOf := now.Format(time.DateOnly)
+	if err := store.ValidateAnomalyPeriod(asOf, period); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	anomalyReport, err := store.ReadAnomalies(request.Context(), s.db, asOf, period)
+	if err != nil {
+		s.internalError(writer, "read anomalies", err)
+		return
+	}
+	writeDocument(writer, report.Anomalies(anomalyReport))
+}
+
 func (s *server) handleBills(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	if err := validateQueryKeys(query, "days"); err != nil {

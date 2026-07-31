@@ -15,7 +15,7 @@ The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes th
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
 Phase 3 is complete; compute-on-read analytics now include `moneta networth --history Nd`, the `mom`, `merchants`, `utilization`, `savings`, and `fixed-variable` trend metrics, the credit-card-only `moneta cards` view, and the composed `moneta dashboard`, without materialized analytics tables.
-Phase 4 through PR7 adds recurring detection and persistence, `moneta recurring`, `moneta bills`, their authenticated REST mirrors, and honest dashboard upcoming-bill population.
+Phase 4 through PR8 adds recurring detection and persistence, `moneta recurring`, `moneta bills`, compute-on-read `moneta anomalies`, their authenticated REST mirrors, and honest dashboard upcoming-bill population.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -304,6 +304,25 @@ Due dates remain visible during their one-day weekly/biweekly or three-day month
 The summary always includes the same four-field detector freshness object used by recurring, status, and dashboard.
 Exit codes: 0 ok, 1 error, 2 usage.
 
+## Anomalies
+
+Find category-level spend spikes against the prior three months:
+
+```sh
+go run ./cmd/moneta anomalies
+go run ./cmd/moneta anomalies --period 2026-04
+go run ./cmd/moneta anomalies --json
+```
+
+The default period is the previous complete calendar month in the host's local timezone.
+An explicitly requested current month compares month-to-date spend with equal day slices from the three preceding months; future periods are rejected.
+The read includes posted, non-excluded, non-transfer outflows and groups by canonical `category_id`, including `Uncategorized`.
+A category is eligible when at least two baseline months have spend and their three-month mean is positive.
+It is flagged only when spend exceeds twice baseline and the increase is at least $50.
+`deviation_ratio` is the fractional increase over baseline, so `1.5` means 150 percent above baseline.
+The summary always includes `skipped_overflow`; a category that exceeds safe integer math is skipped without aborting the read.
+Exit codes: 0 ok, 1 error, 2 usage.
+
 ## Dashboard
 
 ```sh
@@ -371,7 +390,7 @@ It is `null` when no card qualifies, so a missing limit never reads as 0%.
 
 `upcoming_bills` is `null` when recurring detector status is `never_run` or `error`.
 For `ok` or `partial`, it contains the same 30-day `ReadBills` projection as `moneta bills`, capped to five rows while preserving the total count; no due rows render as an honest empty table with count zero.
-`anomalies` remains an explicit `null` placeholder because its engine has not landed.
+`anomalies` remains an explicit `null` placeholder because dashboard projection is reserved for Phase 4 PR9.
 The narrowed `phase4_note` states that remaining limitation inside the payload.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 an Item needs reconnection.
@@ -412,6 +431,7 @@ Read routes:
 | `GET /v1/cards` | none |
 | `GET /v1/recurring` | optional `kind=subscription\|bill\|income` |
 | `GET /v1/bills` | optional `days` from 1 to 366; default 30 |
+| `GET /v1/anomalies` | optional `period=YYYY-MM`; default previous complete month |
 | `GET /v1/dashboard` | none |
 | `GET /v1/trends` | required `metric=mom\|merchants\|utilization\|savings\|fixed-variable`; `mom`: optional `period`; `merchants`: `period` or `from` + `to`, plus `limit`/`full`; `utilization`: `history`, `period`, or `from` + `to`; `savings` and `fixed-variable`: `period` or `from` + `to`; all: `account` |
 
