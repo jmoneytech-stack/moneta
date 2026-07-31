@@ -16,11 +16,12 @@ type RecurringDetectionInput struct {
 	SuccessfulProviderItemIDs map[int64]struct{}
 	Complete                  bool
 	RunAt                     string
+	AsOf                      string
 }
 
-// PersistRecurringDetection applies one detect result and its successful
-// detector state atomically. It never writes transaction back-links; those are
-// owned by Phase 4 PR6.
+// PersistRecurringDetection applies one detect result, its transaction
+// back-links, and its successful detector state atomically. AsOf defines the
+// complete-mode lookback boundary used by unlinking.
 func PersistRecurringDetection(
 	ctx context.Context,
 	db *sql.DB,
@@ -72,6 +73,7 @@ func persistCompleteRecurringDetection(
 	input RecurringDetectionInput,
 ) error {
 	emitted := make(map[recurring.Identity]struct{}, len(input.Result.Series))
+	emittedIDs := make(map[recurring.Identity]int64, len(input.Result.Series))
 	entitySet := make(map[int64]struct{})
 	for _, candidate := range input.Candidates {
 		entitySet[candidate.EntityID] = struct{}{}
@@ -80,9 +82,11 @@ func persistCompleteRecurringDetection(
 		identity := seriesIdentity(series)
 		emitted[identity] = struct{}{}
 		entitySet[series.EntityID] = struct{}{}
-		if err := upsertCompleteRecurringSeries(ctx, tx, series); err != nil {
+		id, err := upsertCompleteRecurringSeries(ctx, tx, series)
+		if err != nil {
 			return err
 		}
+		emittedIDs[identity] = id
 	}
 	overflow := make(map[recurring.Identity]struct{}, len(input.Result.OverflowIdentities))
 	for _, identity := range input.Result.OverflowIdentities {
@@ -145,6 +149,9 @@ func persistCompleteRecurringDetection(
 			return fmt.Errorf("deactivate unseen recurring row: %w", err)
 		}
 	}
+	if err := backLinkCompleteRecurringSeries(ctx, tx, input, emittedIDs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -152,12 +159,13 @@ func upsertCompleteRecurringSeries(
 	ctx context.Context,
 	tx *sql.Tx,
 	series recurring.Series,
-) error {
+) (int64, error) {
 	active := 0
 	if series.IsActive {
 		active = 1
 	}
-	_, err := tx.ExecContext(ctx, `
+	var id int64
+	err := tx.QueryRowContext(ctx, `
 		INSERT INTO recurring_items (
 			entity_id,
 			name,
@@ -190,6 +198,7 @@ func upsertCompleteRecurringSeries(
 			last_matched_cents = excluded.last_matched_cents,
 			schedule_anchor_day = excluded.schedule_anchor_day,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		RETURNING id
 	`,
 		series.EntityID,
 		series.Name,
@@ -204,11 +213,11 @@ func upsertCompleteRecurringSeries(
 		series.LastMatchedDate,
 		series.LastMatchedCents,
 		series.ScheduleAnchorDay,
-	)
+	).Scan(&id)
 	if err != nil {
-		return fmt.Errorf("upsert detected recurring row: %w", err)
+		return 0, fmt.Errorf("upsert detected recurring row: %w", err)
 	}
-	return nil
+	return id, nil
 }
 
 func persistPartialRecurringDetection(
@@ -220,6 +229,11 @@ func persistPartialRecurringDetection(
 	for _, candidate := range input.Candidates {
 		candidatesByID[candidate.TransactionID] = candidate
 	}
+	type partialLink struct {
+		seriesID int64
+		series   recurring.Series
+	}
+	var links []partialLink
 	for _, series := range input.Result.Series {
 		if len(series.MemberTransactionIDs) < 3 {
 			continue
@@ -232,7 +246,23 @@ func persistPartialRecurringDetection(
 		if !eligible {
 			continue
 		}
-		if err := upsertPartialRecurringSeries(ctx, tx, series, evidence); err != nil {
+		seriesID, persisted, err := upsertPartialRecurringSeries(ctx, tx, series, evidence)
+		if err != nil {
+			return err
+		}
+		if persisted {
+			links = append(links, partialLink{seriesID: seriesID, series: series})
+		}
+	}
+	for _, link := range links {
+		if err := backLinkPartialRecurringSeries(
+			ctx,
+			tx,
+			link.seriesID,
+			link.series,
+			candidatesByID,
+			input.SuccessfulProviderItemIDs,
+		); err != nil {
 			return err
 		}
 	}
@@ -261,7 +291,7 @@ func upsertPartialRecurringSeries(
 	tx *sql.Tx,
 	series recurring.Series,
 	evidence recurring.Candidate,
-) error {
+) (int64, bool, error) {
 	var id int64
 	var active, missCount int
 	var lastMatchedDate sql.NullString
@@ -279,19 +309,20 @@ func upsertPartialRecurringSeries(
 		&lastMatchedDate,
 	)
 	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("read partial recurring row: %w", err)
+		return 0, false, fmt.Errorf("read partial recurring row: %w", err)
 	}
 	if err == sql.ErrNoRows {
 		if !series.IsActive {
-			return nil
+			return 0, false, nil
 		}
-		_, err := tx.ExecContext(ctx, `
+		err := tx.QueryRowContext(ctx, `
 			INSERT INTO recurring_items (
 				entity_id, name, kind, cadence, expected_cents,
 				next_expected_date, drift_pct, source, is_active,
 				detect_key, amount_sign, miss_count, last_matched_date,
 				last_matched_cents, schedule_anchor_day
 			) VALUES (?, ?, ?, ?, ?, ?, 0, 'detected', 1, ?, ?, ?, ?, ?, ?)
+			RETURNING id
 		`,
 			series.EntityID,
 			series.Name,
@@ -305,11 +336,11 @@ func upsertPartialRecurringSeries(
 			evidence.Date,
 			evidence.AmountCents,
 			series.ScheduleAnchorDay,
-		)
+		).Scan(&id)
 		if err != nil {
-			return fmt.Errorf("insert partial recurring row: %w", err)
+			return 0, false, fmt.Errorf("insert partial recurring row: %w", err)
 		}
-		return nil
+		return id, true, nil
 	}
 
 	newActive := active
@@ -361,7 +392,158 @@ func upsertPartialRecurringSeries(
 		id,
 	)
 	if err != nil {
-		return fmt.Errorf("update partial recurring row: %w", err)
+		return 0, false, fmt.Errorf("update partial recurring row: %w", err)
+	}
+	return id, true, nil
+}
+
+func backLinkCompleteRecurringSeries(
+	ctx context.Context,
+	tx *sql.Tx,
+	input RecurringDetectionInput,
+	emittedIDs map[recurring.Identity]int64,
+) error {
+	if input.AsOf == "" || len(input.Result.Series) == 0 {
+		return nil
+	}
+	lookbackStart, lookbackEnd, err := recurring.Lookback(input.AsOf)
+	if err != nil {
+		return err
+	}
+	candidatesByID := make(map[int64]recurring.Candidate, len(input.Candidates))
+	for _, candidate := range input.Candidates {
+		candidatesByID[candidate.TransactionID] = candidate
+	}
+	type linkTarget struct {
+		seriesID int64
+		members  []int64
+	}
+	targets := make([]linkTarget, 0, len(input.Result.Series))
+	allEmittedMembers := make(map[int64]struct{})
+	for _, series := range input.Result.Series {
+		seriesID, found := emittedIDs[seriesIdentity(series)]
+		if !found {
+			continue
+		}
+		members := make([]int64, 0, len(series.MemberTransactionIDs))
+		for _, transactionID := range series.MemberTransactionIDs {
+			candidate, found := candidatesByID[transactionID]
+			if !found || candidate.EntityID != series.EntityID ||
+				candidate.Date < lookbackStart || candidate.Date > lookbackEnd {
+				continue
+			}
+			members = append(members, transactionID)
+			allEmittedMembers[transactionID] = struct{}{}
+		}
+		targets = append(targets, linkTarget{seriesID: seriesID, members: members})
+	}
+
+	// Re-key emitted members only from detected rows that are now inactive.
+	// Manual and other emitted active targets are deliberately ineligible.
+	for _, target := range targets {
+		for _, transactionID := range target.members {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE transactions
+				SET recurring_id = ?,
+					updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				WHERE id = ?
+				  AND recurring_id IN (
+					SELECT id FROM recurring_items
+					WHERE source = 'detected' AND is_active = 0
+				  )
+			`, target.seriesID, transactionID); err != nil {
+				return fmt.Errorf("re-key recurring transaction: %w", err)
+			}
+		}
+	}
+	// Link remaining members only when unclaimed or already linked here.
+	for _, target := range targets {
+		for _, transactionID := range target.members {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE transactions
+				SET recurring_id = ?,
+					updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				WHERE id = ? AND (recurring_id IS NULL OR recurring_id = ?)
+			`, target.seriesID, transactionID, target.seriesID); err != nil {
+				return fmt.Errorf("link recurring transaction: %w", err)
+			}
+		}
+	}
+	// Unlink only lookback rows that still point at this emitted series but are
+	// no longer members. Pre-lookback history and unrelated ended series stay.
+	for _, target := range targets {
+		memberSet := make(map[int64]struct{}, len(target.members))
+		for _, transactionID := range target.members {
+			memberSet[transactionID] = struct{}{}
+		}
+		rows, err := tx.QueryContext(ctx, `
+			SELECT id FROM transactions
+			WHERE recurring_id = ? AND date >= ? AND date <= ?
+			ORDER BY id
+		`, target.seriesID, lookbackStart, lookbackEnd)
+		if err != nil {
+			return fmt.Errorf("list recurring lookback links: %w", err)
+		}
+		var unlinkIDs []int64
+		for rows.Next() {
+			var transactionID int64
+			if err := rows.Scan(&transactionID); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan recurring lookback link: %w", err)
+			}
+			if _, member := memberSet[transactionID]; member {
+				continue
+			}
+			if _, emittedElsewhere := allEmittedMembers[transactionID]; emittedElsewhere {
+				continue
+			}
+			unlinkIDs = append(unlinkIDs, transactionID)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("list recurring lookback links: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close recurring lookback links: %w", err)
+		}
+		for _, transactionID := range unlinkIDs {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE transactions
+				SET recurring_id = NULL,
+					updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				WHERE id = ? AND recurring_id = ?
+			`, transactionID, target.seriesID); err != nil {
+				return fmt.Errorf("unlink recurring lookback non-member: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func backLinkPartialRecurringSeries(
+	ctx context.Context,
+	tx *sql.Tx,
+	seriesID int64,
+	series recurring.Series,
+	candidatesByID map[int64]recurring.Candidate,
+	successfulProviderItemIDs map[int64]struct{},
+) error {
+	for _, transactionID := range series.MemberTransactionIDs {
+		candidate, found := candidatesByID[transactionID]
+		if !found || candidate.EntityID != series.EntityID || candidate.ProviderItemID == nil {
+			continue
+		}
+		if _, successful := successfulProviderItemIDs[*candidate.ProviderItemID]; !successful {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE transactions
+			SET recurring_id = ?,
+				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			WHERE id = ? AND (recurring_id IS NULL OR recurring_id = ?)
+		`, seriesID, transactionID, seriesID); err != nil {
+			return fmt.Errorf("link partial recurring transaction: %w", err)
+		}
 	}
 	return nil
 }

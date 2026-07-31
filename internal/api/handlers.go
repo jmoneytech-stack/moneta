@@ -535,6 +535,38 @@ func (s *server) handleCards(writer http.ResponseWriter, request *http.Request) 
 	writeDocument(writer, buildCardsDocument(report))
 }
 
+func (s *server) handleRecurring(writer http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	if err := validateQueryKeys(query, "kind"); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	kind, err := queryValue(query, "kind")
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	switch kind {
+	case "", "subscription", "bill", "income":
+	default:
+		writeError(writer, http.StatusBadRequest, "kind must be subscription, bill, or income")
+		return
+	}
+	now := time.Now()
+	if s.now != nil {
+		now = s.now()
+	}
+	recurringReport, err := store.ReadRecurring(request.Context(), s.db, store.RecurringFilter{
+		AsOf: now.Format(time.DateOnly),
+		Kind: kind,
+	})
+	if err != nil {
+		s.internalError(writer, "read recurring", err)
+		return
+	}
+	writeDocument(writer, report.Recurring(recurringReport))
+}
+
 // handleDashboard mirrors the moneta dashboard CLI payload. There is no HTTP
 // analogue of the CLI's exit 3, so reconnection state is reported inside the
 // document through the sync section.
