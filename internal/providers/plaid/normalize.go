@@ -66,20 +66,30 @@ func normalizeTransactions(
 		if merchant == "" {
 			merchant = transaction.Name
 		}
+		// merchant_raw stays the institution original for dedup provenance;
+		// the enriched merchant_name is display/group input only (D4-7).
+		display := transaction.MerchantName
+		if display == "" {
+			display = transaction.Name
+		}
+		if display == "" {
+			display = transaction.OriginalDescription
+		}
 		status := canon.TxnStatusPosted
 		if transaction.Pending {
 			status = canon.TxnStatusPending
 		}
 		canonicalTransactions = append(canonicalTransactions, canon.Transaction{
-			ProviderTxnID:  transaction.ID,
-			PendingTxnID:   transaction.PendingID,
-			AccountRef:     transaction.AccountID,
-			Date:           canon.Date(transaction.Date),
-			AmountCents:    amount,
-			MerchantRaw:    merchant,
-			SourceCategory: transaction.Category,
-			Status:         status,
-			Currency:       currency,
+			ProviderTxnID:   transaction.ID,
+			PendingTxnID:    transaction.PendingID,
+			AccountRef:      transaction.AccountID,
+			Date:            canon.Date(transaction.Date),
+			AmountCents:     amount,
+			MerchantRaw:     merchant,
+			MerchantDisplay: display,
+			SourceCategory:  transaction.Category,
+			Status:          status,
+			Currency:        currency,
 		})
 	}
 	return canonicalTransactions, skipped
@@ -91,6 +101,7 @@ func normalizeTransactions(
 func normalizeLiabilities(
 	liabilities rawLiabilities,
 	accounts map[string]rawAccount,
+	asOf canon.Date,
 ) ([]canon.Liability, []canon.SkippedRecord) {
 	var skipped []canon.SkippedRecord
 	skip := func(accountID, detail string) {
@@ -126,9 +137,7 @@ func normalizeLiabilities(
 		if existing.StatementDay == 0 {
 			existing.StatementDay = liability.StatementDay
 		}
-		if existing.DueDay == 0 || liability.DueDay != 0 && liability.DueDay < existing.DueDay {
-			existing.DueDay = liability.DueDay
-		}
+		existing = mergeLiabilityDueDate(existing, liability, asOf)
 		byAccount[liability.AccountRef] = existing
 	}
 
@@ -153,7 +162,7 @@ func normalizeLiabilities(
 			skip(credit.AccountID, "invalid statement date")
 			continue
 		}
-		dueDay, err := dateDay(credit.NextPaymentDueDate)
+		dueDate, dueDay, err := fullDateAndDay(credit.NextPaymentDueDate)
 		if err != nil {
 			skip(credit.AccountID, "invalid due date")
 			continue
@@ -166,6 +175,7 @@ func normalizeLiabilities(
 			LastStatementCents: statement,
 			StatementDay:       statementDay,
 			DueDay:             dueDay,
+			NextPaymentDueDate: dueDate,
 		})
 	}
 	for _, student := range liabilities.Student {
@@ -184,7 +194,7 @@ func normalizeLiabilities(
 			skip(student.AccountID, "invalid statement date")
 			continue
 		}
-		dueDay, err := dateDay(student.NextPaymentDueDate)
+		dueDate, dueDay, err := fullDateAndDay(student.NextPaymentDueDate)
 		if err != nil {
 			skip(student.AccountID, "invalid due date")
 			continue
@@ -196,6 +206,7 @@ func normalizeLiabilities(
 			LastStatementCents: statement,
 			StatementDay:       statementDay,
 			DueDay:             dueDay,
+			NextPaymentDueDate: dueDate,
 		})
 	}
 	for _, mortgage := range liabilities.Mortgage {
@@ -204,7 +215,7 @@ func normalizeLiabilities(
 			skip(mortgage.AccountID, "invalid monthly payment")
 			continue
 		}
-		dueDay, err := dateDay(mortgage.NextPaymentDueDate)
+		dueDate, dueDay, err := fullDateAndDay(mortgage.NextPaymentDueDate)
 		if err != nil {
 			skip(mortgage.AccountID, "invalid due date")
 			continue
@@ -214,10 +225,11 @@ func normalizeLiabilities(
 			apr = *mortgage.InterestPercentage
 		}
 		merge(canon.Liability{
-			AccountRef:      mortgage.AccountID,
-			APR:             apr,
-			MinPaymentCents: minimum,
-			DueDay:          dueDay,
+			AccountRef:         mortgage.AccountID,
+			APR:                apr,
+			MinPaymentCents:    minimum,
+			DueDay:             dueDay,
+			NextPaymentDueDate: dueDate,
 		})
 	}
 
@@ -250,6 +262,60 @@ func normalizeLiabilities(
 		keptSkipped = append(keptSkipped, record)
 	}
 	return canonicalLiabilities, keptSkipped
+}
+
+// mergeLiabilityDueDate applies D4-12's single-pair rule. Among full dates,
+// the earliest future-or-equal date wins; if all are past, the latest past
+// date wins. DueDay always travels with the winning full date.
+func mergeLiabilityDueDate(
+	existing canon.Liability,
+	candidate canon.Liability,
+	asOf canon.Date,
+) canon.Liability {
+	switch {
+	case existing.NextPaymentDueDate != "" && candidate.NextPaymentDueDate != "":
+		winner := preferredLiabilityDueDate(
+			asOf,
+			existing.NextPaymentDueDate,
+			candidate.NextPaymentDueDate,
+		)
+		if winner == candidate.NextPaymentDueDate {
+			existing.NextPaymentDueDate = candidate.NextPaymentDueDate
+			existing.DueDay = candidate.DueDay
+		}
+	case candidate.NextPaymentDueDate != "":
+		existing.NextPaymentDueDate = candidate.NextPaymentDueDate
+		existing.DueDay = candidate.DueDay
+	case existing.NextPaymentDueDate != "":
+		// Keep the existing coherent pair.
+	default:
+		// Defensive legacy fallback for any provider that supplies only a day.
+		if existing.DueDay == 0 || candidate.DueDay != 0 && candidate.DueDay < existing.DueDay {
+			existing.DueDay = candidate.DueDay
+		}
+	}
+	return existing
+}
+
+func preferredLiabilityDueDate(asOf, left, right canon.Date) canon.Date {
+	leftFuture := left >= asOf
+	rightFuture := right >= asOf
+	switch {
+	case leftFuture && rightFuture:
+		if left <= right {
+			return left
+		}
+		return right
+	case leftFuture:
+		return left
+	case rightFuture:
+		return right
+	default:
+		if left >= right {
+			return left
+		}
+		return right
+	}
 }
 
 func canonicalAccountType(accountType, subtype string) (canon.AccountType, error) {
@@ -346,14 +412,19 @@ func preferredAPR(aprs []rawAPR) float64 {
 }
 
 func dateDay(date string) (int, error) {
+	_, day, err := fullDateAndDay(date)
+	return day, err
+}
+
+func fullDateAndDay(date string) (canon.Date, int, error) {
 	if date == "" {
-		return 0, nil
+		return "", 0, nil
 	}
 	parsed, err := time.Parse("2006-01-02", date)
 	if err != nil || parsed.Format("2006-01-02") != date {
-		return 0, fmt.Errorf("date %q must use valid YYYY-MM-DD form", date)
+		return "", 0, fmt.Errorf("date %q must use valid YYYY-MM-DD form", date)
 	}
-	return parsed.Day(), nil
+	return canon.Date(date), parsed.Day(), nil
 }
 
 // validISODate reports whether date is a real calendar date in strict

@@ -30,6 +30,32 @@ func TestDedupHashExcludesMutableStatus(t *testing.T) {
 	}
 }
 
+func TestDedupHashIgnoresMerchantDisplay(t *testing.T) {
+	base := canon.Transaction{
+		AccountRef:      "account-1",
+		Date:            "2026-07-01",
+		AmountCents:     -435,
+		MerchantRaw:     "TST* COFFEE",
+		MerchantDisplay: "Coffee Shop",
+		Status:          canon.TxnStatusPosted,
+	}
+	emptyDisplay := base
+	emptyDisplay.MerchantDisplay = ""
+	if DedupHash(base) != DedupHash(emptyDisplay) {
+		t.Fatal("dedup hash changed when merchant display was cleared")
+	}
+	renamed := base
+	renamed.MerchantDisplay = "Coffee Shop Downtown"
+	if DedupHash(base) != DedupHash(renamed) {
+		t.Fatal("dedup hash changed when only merchant display changed")
+	}
+	rawChanged := base
+	rawChanged.MerchantRaw = "TST* COFFEE 2"
+	if DedupHash(base) == DedupHash(rawChanged) {
+		t.Fatal("dedup hash did not change when merchant raw changed")
+	}
+}
+
 func TestNormalizeMerchantIsConservative(t *testing.T) {
 	got := NormalizeMerchant("  Grocery   MART #12 ")
 	want := "grocery mart #12"

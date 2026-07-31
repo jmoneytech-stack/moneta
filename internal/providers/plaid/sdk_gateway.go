@@ -225,6 +225,7 @@ func transactionFromSDK(transaction *plaidSDK.Transaction) rawTransaction {
 		Date:                transaction.GetDate(),
 		Amount:              transaction.GetAmount(),
 		Name:                transaction.GetName(),
+		MerchantName:        transaction.GetMerchantName(),
 		OriginalDescription: transaction.GetOriginalDescription(),
 		Category:            category,
 		Pending:             transaction.GetPending(),

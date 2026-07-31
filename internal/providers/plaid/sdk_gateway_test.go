@@ -57,6 +57,7 @@ func TestSDKGatewayBuildsRequestsAndParsesResponses(t *testing.T) {
 					"unofficial_currency_code":null,
 					"date":"2026-07-01",
 					"name":"RAW NAME",
+					"merchant_name":"Coffee Shop",
 					"original_description":"Original Name",
 					"pending":true,
 					"pending_transaction_id":null,
@@ -138,6 +139,7 @@ func TestSDKGatewayBuildsRequestsAndParsesResponses(t *testing.T) {
 		t.Errorf("parsed sync page = %#v", page)
 	}
 	if page.Added[0].OriginalDescription != "Original Name" ||
+		page.Added[0].MerchantName != "Coffee Shop" ||
 		page.Added[0].Category != "FOOD_AND_DRINK" || !page.Added[0].Pending {
 		t.Errorf("parsed transaction = %#v", page.Added[0])
 	}

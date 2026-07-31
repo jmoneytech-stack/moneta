@@ -144,7 +144,12 @@ func (p *Provider) Sync(ctx context.Context, cursor string) (*canon.SyncBatch, e
 	)
 	added, addedSkipped := normalizeTransactions(updates.added)
 	modified, modifiedSkipped := normalizeTransactions(updates.modified)
-	canonicalLiabilities, liabilitiesSkipped := normalizeLiabilities(liabilities, accountByID)
+	normalizationDate := canon.Date(p.now().Format("2006-01-02"))
+	canonicalLiabilities, liabilitiesSkipped := normalizeLiabilities(
+		liabilities,
+		accountByID,
+		normalizationDate,
+	)
 	skipped = append(skipped, addedSkipped...)
 	skipped = append(skipped, modifiedSkipped...)
 	skipped = append(skipped, liabilitiesSkipped...)

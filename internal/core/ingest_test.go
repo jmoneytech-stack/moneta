@@ -152,6 +152,121 @@ func TestApplySyncUsesFuzzyFallbackForIDLessPendingTransition(t *testing.T) {
 	}
 }
 
+func TestApplySyncWritesAndRewritesMerchantColumns(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+	ctx := context.Background()
+
+	transaction := canon.Transaction{
+		ProviderTxnID:   "transaction-1",
+		AccountRef:      "checking-1",
+		Date:            "2026-07-01",
+		AmountCents:     -435,
+		MerchantRaw:     "TST* COFFEE",
+		MerchantDisplay: "Coffee Shop",
+		Status:          canon.TxnStatusPosted,
+		Currency:        "USD",
+	}
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+		Accounts: []canon.Account{{
+			ProviderAccountID: "checking-1",
+			Name:              "Test Checking",
+			Type:              canon.AccountTypeChecking,
+			Currency:          "USD",
+		}},
+		Added:      []canon.Transaction{transaction},
+		NextCursor: "cursor-1",
+	}); err != nil {
+		t.Fatalf("apply first batch: %v", err)
+	}
+
+	var raw, display string
+	if err := db.QueryRow(
+		"SELECT merchant_raw, merchant_display FROM transactions",
+	).Scan(&raw, &display); err != nil {
+		t.Fatalf("read merchant columns: %v", err)
+	}
+	if raw != "TST* COFFEE" || display != "Coffee Shop" {
+		t.Errorf("merchant columns = %q/%q, want TST* COFFEE/Coffee Shop", raw, display)
+	}
+
+	// A provider-id match rewrites both merchant columns.
+	updated := transaction
+	updated.MerchantRaw = "TST* COFFEE 2"
+	updated.MerchantDisplay = "Coffee Shop Downtown"
+	target.ExpectedCursor = "cursor-1"
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+		Modified:   []canon.Transaction{updated},
+		NextCursor: "cursor-2",
+	}); err != nil {
+		t.Fatalf("apply second batch: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(
+		"SELECT count(*), merchant_raw, merchant_display FROM transactions",
+	).Scan(&count, &raw, &display); err != nil {
+		t.Fatalf("reread merchant columns: %v", err)
+	}
+	if count != 1 || raw != "TST* COFFEE 2" || display != "Coffee Shop Downtown" {
+		t.Errorf("after update = %d rows %q/%q, want 1 row TST* COFFEE 2/Coffee Shop Downtown",
+			count, raw, display)
+	}
+}
+
+func TestApplySyncStoresCardNextPaymentDueDate(t *testing.T) {
+	db, ingestor, target := newTestIngestor(t, "plaid")
+	ctx := context.Background()
+
+	account := canon.Account{
+		ProviderAccountID: "card-1",
+		Name:              "Test Card",
+		Type:              canon.AccountTypeCreditCard,
+		Currency:          "USD",
+	}
+	liability := canon.Liability{
+		AccountRef:         "card-1",
+		DueDay:             28,
+		NextPaymentDueDate: "2026-07-28",
+	}
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+		Accounts:    []canon.Account{account},
+		Liabilities: []canon.Liability{liability},
+		NextCursor:  "cursor-1",
+	}); err != nil {
+		t.Fatalf("apply liability batch: %v", err)
+	}
+	var dueDay int
+	var dueDate string
+	if err := db.QueryRow(
+		"SELECT due_day, next_payment_due_date FROM credit_terms",
+	).Scan(&dueDay, &dueDate); err != nil {
+		t.Fatalf("read credit terms: %v", err)
+	}
+	if dueDay != 28 || dueDate != "2026-07-28" {
+		t.Errorf("credit due pair = %d/%q, want 28/2026-07-28", dueDay, dueDate)
+	}
+
+	// A liability without a full date stores NULL, mirroring nullable money.
+	cleared := liability
+	cleared.NextPaymentDueDate = ""
+	cleared.DueDay = 15
+	target.ExpectedCursor = "cursor-1"
+	if _, err := ingestor.ApplySync(ctx, target, &canon.SyncBatch{
+		Liabilities: []canon.Liability{cleared},
+		NextCursor:  "cursor-2",
+	}); err != nil {
+		t.Fatalf("apply cleared liability batch: %v", err)
+	}
+	var dateNull bool
+	if err := db.QueryRow(
+		"SELECT due_day, next_payment_due_date IS NULL FROM credit_terms",
+	).Scan(&dueDay, &dateNull); err != nil {
+		t.Fatalf("reread credit terms: %v", err)
+	}
+	if dueDay != 15 || !dateNull {
+		t.Errorf("after clear = due_day %d, null %v, want 15/true", dueDay, dateNull)
+	}
+}
+
 func TestApplySyncKeepsDistinctNativeTransactionsWithIdenticalDetails(t *testing.T) {
 	db, ingestor, target := newTestIngestor(t, "plaid")
 

@@ -37,15 +37,16 @@ type Account struct {
 // convention. AmountCents is always integer cents, with negative values
 // representing outflows.
 type Transaction struct {
-	ProviderTxnID  string
-	PendingTxnID   string
-	AccountRef     string
-	Date           Date
-	AmountCents    int64
-	MerchantRaw    string
-	SourceCategory string
-	Status         TxnStatus
-	Currency       string
+	ProviderTxnID   string
+	PendingTxnID    string
+	AccountRef      string
+	Date            Date
+	AmountCents     int64
+	MerchantRaw     string
+	MerchantDisplay string
+	SourceCategory  string
+	Status          TxnStatus
+	Currency        string
 }
 
 // Balance is an account balance observed on a given date. CurrentCents is
@@ -70,6 +71,10 @@ type Liability struct {
 	LastStatementCents *int64
 	StatementDay       int
 	DueDay             int
+	// NextPaymentDueDate is the provider-reported full next-payment date,
+	// empty when unknown. DueDay is always derived from this date when it
+	// is present, so the pair never comes from different provider records.
+	NextPaymentDueDate Date
 }
 
 // ConnectionStatus describes provider connection health without exposing
