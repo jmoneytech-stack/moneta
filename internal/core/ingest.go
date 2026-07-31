@@ -87,7 +87,7 @@ func (i *Ingestor) ApplySync(
 	if err != nil {
 		return nil, fmt.Errorf("begin sync transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	writer, err := newSyncWriter(ctx, tx, target)
 	if err != nil {
@@ -480,9 +480,9 @@ func (w *syncWriter) insertTransaction(
 	result, err := w.tx.ExecContext(ctx, `
 		INSERT INTO transactions (
 			account_id, entity_id, date, amount_cents, currency,
-			merchant_raw, merchant_norm, category_id, status,
+			merchant_raw, merchant_display, merchant_norm, category_id, status,
 			is_transfer, excluded, dedup_hash
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		account.id,
 		account.entityID,
@@ -490,6 +490,7 @@ func (w *syncWriter) insertTransaction(
 		transaction.AmountCents,
 		currency,
 		transaction.MerchantRaw,
+		transaction.MerchantDisplay,
 		merchantNormalized,
 		nullableCategoryID(category),
 		transaction.Status,
@@ -525,6 +526,7 @@ func (w *syncWriter) updateTransaction(
 			amount_cents = ?,
 			currency = ?,
 			merchant_raw = ?,
+			merchant_display = ?,
 			merchant_norm = ?,
 			category_id = ?,
 			status = ?,
@@ -540,6 +542,7 @@ func (w *syncWriter) updateTransaction(
 		transaction.AmountCents,
 		currency,
 		transaction.MerchantRaw,
+		transaction.MerchantDisplay,
 		merchantNormalized,
 		nullableCategoryID(category),
 		transaction.Status,
@@ -700,8 +703,8 @@ func (w *syncWriter) upsertLiability(ctx context.Context, liability canon.Liabil
 		if _, err := w.tx.ExecContext(ctx, `
 			INSERT INTO credit_terms (
 				account_id, limit_cents, apr, statement_day, due_day,
-				min_payment_cents, last_statement_cents
-			) VALUES (?, ?, ?, ?, ?, ?, ?)
+				min_payment_cents, last_statement_cents, next_payment_due_date
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (account_id) DO UPDATE SET
 				limit_cents = excluded.limit_cents,
 				apr = excluded.apr,
@@ -709,6 +712,7 @@ func (w *syncWriter) upsertLiability(ctx context.Context, liability canon.Liabil
 				due_day = excluded.due_day,
 				min_payment_cents = excluded.min_payment_cents,
 				last_statement_cents = excluded.last_statement_cents,
+				next_payment_due_date = excluded.next_payment_due_date,
 				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		`,
 			account.id,
@@ -718,6 +722,7 @@ func (w *syncWriter) upsertLiability(ctx context.Context, liability canon.Liabil
 			dueDay,
 			nullableCents(liability.MinPaymentCents),
 			nullableCents(liability.LastStatementCents),
+			nullableString(string(liability.NextPaymentDueDate)),
 		); err != nil {
 			return fmt.Errorf("upsert credit terms: %w", err)
 		}

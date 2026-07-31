@@ -27,8 +27,8 @@ func TestOpenAppliesInitialSchemaIdempotently(t *testing.T) {
 	if err := db.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 3 {
-		t.Fatalf("migration count = %d, want 3", migrationCount)
+	if migrationCount != 4 {
+		t.Fatalf("migration count = %d, want 4", migrationCount)
 	}
 
 	for _, table := range []string{
@@ -404,6 +404,150 @@ func insertEntity(t *testing.T, db *sql.DB, kind, name string) int64 {
 	}
 
 	return id
+}
+
+func TestMigration000004MerchantDisplayAndCardDueDate(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "moneta.db"))
+	if err != nil {
+		t.Fatalf("open pre-000004 database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close pre-000004 database: %v", err)
+		}
+	})
+	if _, err := db.Exec(`
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		) STRICT
+	`); err != nil {
+		t.Fatalf("create migration table: %v", err)
+	}
+	for version, name := range []string{
+		"000001_initial_schema.up.sql",
+		"000002_import_runs_skipped.up.sql",
+		"000003_normalize_liability_balance_sign.up.sql",
+	} {
+		migrationSQL, err := migrationFiles.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatalf("read migration %q: %v", name, err)
+		}
+		if _, err := db.Exec(string(migrationSQL)); err != nil {
+			t.Fatalf("apply migration %q: %v", name, err)
+		}
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+			version+1,
+			name,
+		); err != nil {
+			t.Fatalf("record migration %q: %v", name, err)
+		}
+	}
+
+	entityID := insertEntity(t, db, "personal", "Personal")
+	accountID := insertAccountFull(t, db, entityID, "Everyday Checking", "checking", "acct-mig4")
+	if _, err := db.Exec(`
+		INSERT INTO transactions (account_id, entity_id, date, amount_cents, status, dedup_hash)
+		VALUES (?, ?, '2026-07-01', -100, 'posted', 'existing-mig4')
+	`, accountID, entityID); err != nil {
+		t.Fatalf("insert pre-000004 transaction: %v", err)
+	}
+	cardID := insertAccountFull(t, db, entityID, "Credit Example", "credit_card", "card-mig4")
+	if _, err := db.Exec("INSERT INTO credit_terms (account_id) VALUES (?)", cardID); err != nil {
+		t.Fatalf("insert pre-000004 credit terms: %v", err)
+	}
+
+	if err := ApplyMigrations(context.Background(), db); err != nil {
+		t.Fatalf("apply migration 000004: %v", err)
+	}
+
+	var declaredType string
+	var notNull int
+	if err := db.QueryRow(`
+		SELECT type, "notnull" FROM pragma_table_info('transactions')
+		WHERE name = 'merchant_display'
+	`).Scan(&declaredType, &notNull); err != nil {
+		t.Fatalf("read merchant_display column info: %v", err)
+	}
+	if declaredType != "TEXT" || notNull != 1 {
+		t.Errorf("merchant_display type/notnull = %q/%d, want TEXT/1", declaredType, notNull)
+	}
+
+	if err := db.QueryRow(`
+		SELECT type, "notnull" FROM pragma_table_info('credit_terms')
+		WHERE name = 'next_payment_due_date'
+	`).Scan(&declaredType, &notNull); err != nil {
+		t.Fatalf("read next_payment_due_date column info: %v", err)
+	}
+	if declaredType != "TEXT" || notNull != 0 {
+		t.Errorf("next_payment_due_date type/notnull = %q/%d, want TEXT/0", declaredType, notNull)
+	}
+
+	// Existing and fresh rows both receive the settled defaults.
+	var display string
+	if err := db.QueryRow(`
+		SELECT merchant_display FROM transactions WHERE dedup_hash = 'existing-mig4'
+	`).Scan(&display); err != nil {
+		t.Fatalf("read existing merchant_display default: %v", err)
+	}
+	if display != "" {
+		t.Errorf("existing merchant_display = %q, want empty", display)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO transactions (account_id, entity_id, date, amount_cents, status, dedup_hash)
+		VALUES (?, ?, '2026-07-02', -200, 'posted', 'fresh-mig4')
+	`, accountID, entityID); err != nil {
+		t.Fatalf("insert fresh transaction without merchant_display: %v", err)
+	}
+	if err := db.QueryRow(`
+		SELECT merchant_display FROM transactions WHERE dedup_hash = 'fresh-mig4'
+	`).Scan(&display); err != nil {
+		t.Fatalf("read fresh merchant_display default: %v", err)
+	}
+	if display != "" {
+		t.Errorf("fresh merchant_display = %q, want empty", display)
+	}
+
+	var dueDateNull bool
+	if err := db.QueryRow(
+		"SELECT next_payment_due_date IS NULL FROM credit_terms",
+	).Scan(&dueDateNull); err != nil {
+		t.Fatalf("read next_payment_due_date default: %v", err)
+	}
+	if !dueDateNull {
+		t.Error("next_payment_due_date default is not NULL")
+	}
+	if _, err := db.Exec(`
+		UPDATE credit_terms SET next_payment_due_date = '07/28/2026'
+	`); err == nil {
+		t.Error("invalid next_payment_due_date format accepted, want CHECK rejection")
+	}
+
+	downSQL, err := migrationFiles.ReadFile("migrations/000004_merchant_display_and_card_due_date.down.sql")
+	if err != nil {
+		t.Fatalf("read down migration: %v", err)
+	}
+	if _, err := db.Exec(string(downSQL)); err != nil {
+		t.Fatalf("apply down migration: %v", err)
+	}
+	for table, column := range map[string]string{
+		"transactions": "merchant_display",
+		"credit_terms": "next_payment_due_date",
+	} {
+		var exists bool
+		if err := db.QueryRow(`
+			SELECT EXISTS(
+				SELECT 1 FROM pragma_table_info(?) WHERE name = ?
+			)
+		`, table, column).Scan(&exists); err != nil {
+			t.Fatalf("check %s.%s removal: %v", table, column, err)
+		}
+		if exists {
+			t.Errorf("%s.%s still exists after down migration", table, column)
+		}
+	}
 }
 
 func insertAccount(t *testing.T, db *sql.DB, entityID int64, providerAccountID string) int64 {

@@ -49,6 +49,7 @@ type rawTransaction struct {
 	Date                string
 	Amount              float64
 	Name                string
+	MerchantName        string
 	OriginalDescription string
 	Category            string
 	Pending             bool

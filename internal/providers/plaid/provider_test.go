@@ -51,6 +51,7 @@ func TestProviderSyncPaginatesAndNormalizesCompleteBatch(t *testing.T) {
 					Date:                "2026-07-01",
 					Amount:              4.35,
 					Name:                "COFFEE SHOP 123",
+					MerchantName:        "Coffee Shop",
 					OriginalDescription: "Coffee Shop",
 					Category:            "FOOD_AND_DRINK",
 					Pending:             true,
@@ -153,8 +154,10 @@ func TestProviderSyncPaginatesAndNormalizesCompleteBatch(t *testing.T) {
 	if added.AmountCents != -435 || added.Status != canon.TxnStatusPending {
 		t.Errorf("added transaction amount/status = %d/%s, want -435/pending", added.AmountCents, added.Status)
 	}
-	if added.MerchantRaw != "Coffee Shop" || added.SourceCategory != "FOOD_AND_DRINK" {
-		t.Errorf("added merchant/category = %q/%q", added.MerchantRaw, added.SourceCategory)
+	if added.MerchantRaw != "Coffee Shop" || added.MerchantDisplay != "Coffee Shop" ||
+		added.SourceCategory != "FOOD_AND_DRINK" {
+		t.Errorf("added merchant raw/display/category = %q/%q/%q",
+			added.MerchantRaw, added.MerchantDisplay, added.SourceCategory)
 	}
 	if len(batch.Modified) != 1 || batch.Modified[0].AmountCents != 101 {
 		t.Errorf("modified transactions = %#v, want +101-cent inflow", batch.Modified)
@@ -173,8 +176,10 @@ func TestProviderSyncPaginatesAndNormalizesCompleteBatch(t *testing.T) {
 		!reflect.DeepEqual(liability.LastStatementCents, centsPointer(435)) {
 		t.Errorf("credit liability = %#v", liability)
 	}
-	if liability.StatementDay != 5 || liability.DueDay != 28 {
-		t.Errorf("statement/due days = %d/%d, want 5/28", liability.StatementDay, liability.DueDay)
+	if liability.StatementDay != 5 || liability.DueDay != 28 ||
+		liability.NextPaymentDueDate != "2026-07-28" {
+		t.Errorf("statement/due fields = %d/%d/%q, want 5/28/2026-07-28",
+			liability.StatementDay, liability.DueDay, liability.NextPaymentDueDate)
 	}
 }
 
@@ -423,7 +428,7 @@ func TestProviderOptionalMoneyPreservesMissingAndZero(t *testing.T) {
 				LastStatementBalance: &zero,
 			},
 		},
-	}, accounts)
+	}, accounts, canon.Date("2026-07-22"))
 	if len(liabilitySkipped) != 0 || len(liabilities) != 2 {
 		t.Fatalf("normalizeLiabilities() = %d liabilities / %#v skipped",
 			len(liabilities), liabilitySkipped)
