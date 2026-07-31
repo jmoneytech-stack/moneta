@@ -10,10 +10,9 @@ import (
 	"github.com/jmoneytech-stack/moneta/internal/toon"
 )
 
-// Phase4Note explains the two deliberately empty dashboard slots. Their read
-// projections have not landed yet, so they render as null rather than 0 and an
-// agent can tell "not implemented" from "none found".
-const Phase4Note = "upcoming_bills and anomalies are available in a later phase"
+// Phase4Note explains the one remaining empty dashboard slot. The anomaly
+// read has not landed, so it remains null instead of fabricating a value.
+const Phase4Note = "anomalies are available in a later phase"
 
 // cashNote states the deliberate narrowness of the cash proxy: investments and
 // other assets reach net worth but are not spendable cash.
@@ -62,10 +61,20 @@ func Dashboard(dashboard store.DashboardReport) toon.Object {
 			{Key: "login_required", Value: dashboard.Sync.LoginRequired},
 		}},
 		{Key: "recurring_detect", Value: Detector(dashboard.RecurringDetect, false)},
-		{Key: "upcoming_bills", Value: nil},
+		{Key: "upcoming_bills", Value: dashboardUpcomingBills(dashboard)},
 		{Key: "anomalies", Value: nil},
 		{Key: "phase4_note", Value: Phase4Note},
 		{Key: "hint", Value: dashboardHint(dashboard)},
+	}
+}
+
+func dashboardUpcomingBills(dashboard store.DashboardReport) any {
+	if dashboard.UpcomingBills == nil {
+		return nil
+	}
+	return toon.Object{
+		{Key: "count", Value: len(dashboard.UpcomingBills.Items)},
+		{Key: "bills", Value: billsTable(dashboard.UpcomingBills.Items, dashboardBillsLimit)},
 	}
 }
 

@@ -59,7 +59,9 @@ func TestReadDashboardComposesStoreReads(t *testing.T) {
 	insertDashboardProviderItem(t, db, "item-ok", "ok")
 	insertDashboardProviderItem(t, db, "item-stale", "login_required")
 
-	report, err := ReadDashboard(ctx, db, DashboardFilter{From: "2026-07-01", To: "2026-07-31"})
+	report, err := ReadDashboard(ctx, db, DashboardFilter{
+		From: "2026-07-01", To: "2026-07-31", BillsAsOf: "2026-07-01",
+	})
 	if err != nil {
 		t.Fatalf("ReadDashboard() error: %v", err)
 	}
@@ -115,7 +117,9 @@ func TestReadDashboardUtilizationFloorsOverpayAndPrefersSnapshotLimit(t *testing
 	insertUtilizationSnapshot(t, db, overpayID, "2026-07-22", -5000, nil)
 	insertUtilizationSnapshot(t, db, dualLimitID, "2026-07-22", 200000, int64(800000))
 
-	report, err := ReadDashboard(ctx, db, DashboardFilter{From: "2026-07-01", To: "2026-07-31"})
+	report, err := ReadDashboard(ctx, db, DashboardFilter{
+		From: "2026-07-01", To: "2026-07-31", BillsAsOf: "2026-07-01",
+	})
 	if err != nil {
 		t.Fatalf("ReadDashboard() error: %v", err)
 	}
@@ -135,7 +139,9 @@ func TestReadDashboardUtilizationFloorsOverpayAndPrefersSnapshotLimit(t *testing
 func TestReadDashboardEmptyDatabaseAndValidation(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	filter := DashboardFilter{From: "2026-07-01", To: "2026-07-31"}
+	filter := DashboardFilter{
+		From: "2026-07-01", To: "2026-07-31", BillsAsOf: "2026-07-01",
+	}
 
 	report, err := ReadDashboard(ctx, db, filter)
 	if err != nil {
@@ -177,7 +183,9 @@ func TestReadDashboardUtilizationSkipsUnusableLimits(t *testing.T) {
 		t.Fatalf("insert credit terms: %v", err)
 	}
 
-	report, err := ReadDashboard(ctx, db, DashboardFilter{From: "2026-07-01", To: "2026-07-31"})
+	report, err := ReadDashboard(ctx, db, DashboardFilter{
+		From: "2026-07-01", To: "2026-07-31", BillsAsOf: "2026-07-01",
+	})
 	if err != nil {
 		t.Fatalf("ReadDashboard() error: %v", err)
 	}

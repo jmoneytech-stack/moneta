@@ -71,8 +71,9 @@ func runDashboardAt(
 	defer func() { _ = database.Close() }()
 
 	dashboard, err := store.ReadDashboard(ctx, database, store.DashboardFilter{
-		From: period.From,
-		To:   period.To,
+		From:      period.From,
+		To:        period.To,
+		BillsAsOf: now.Format(time.DateOnly),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)

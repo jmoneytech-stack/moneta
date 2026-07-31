@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jmoneytech-stack/moneta/internal/canon"
@@ -535,6 +536,39 @@ func (s *server) handleCards(writer http.ResponseWriter, request *http.Request) 
 	writeDocument(writer, buildCardsDocument(report))
 }
 
+func (s *server) handleBills(writer http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	if err := validateQueryKeys(query, "days"); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	days := 30
+	if _, provided := query["days"]; provided {
+		value, err := queryValue(query, "days")
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		days, err = strconv.Atoi(value)
+		if err != nil || days < 1 || days > 366 {
+			writeError(writer, http.StatusBadRequest, "days must be an integer from 1 to 366")
+			return
+		}
+	}
+	now := time.Now()
+	if s.now != nil {
+		now = s.now()
+	}
+	billsReport, err := store.ReadBills(
+		request.Context(), s.db, now.Format(time.DateOnly), days,
+	)
+	if err != nil {
+		s.internalError(writer, "read bills", err)
+		return
+	}
+	writeDocument(writer, report.Bills(billsReport))
+}
+
 func (s *server) handleRecurring(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	if err := validateQueryKeys(query, "kind"); err != nil {
@@ -585,8 +619,9 @@ func (s *server) handleDashboard(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	dashboard, err := store.ReadDashboard(request.Context(), s.db, store.DashboardFilter{
-		From: month.from,
-		To:   month.to,
+		From:      month.from,
+		To:        month.to,
+		BillsAsOf: now.Format(time.DateOnly),
 	})
 	if err != nil {
 		s.internalError(writer, "read dashboard", err)
