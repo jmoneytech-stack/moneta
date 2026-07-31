@@ -18,9 +18,9 @@ The dashboard is the explicit `moneta dashboard` subcommand (R3(b)/B1) - bare `m
 Its `upcoming_bills` slot follows the detector gate: `null` for `never_run`/`error`, and an honest empty or populated projection for `ok`/`partial`.
 Its `anomalies` slot remains a deliberate `null` placeholder; never fabricate a value for it.
 A follow-up polish pass moved the dashboard document into `internal/report` so the CLI and REST payloads are one definition and cannot drift.
-Phase 4 PR1-PR7 are complete: enriched merchant/card due-date ingestion, safe history replay, detector schema/state, the pure recurring detector, post-sync complete/partial persistence, transaction back-links, the `moneta recurring` / `/v1/recurring` read, and the `moneta bills` / `/v1/bills` read with dashboard `upcoming_bills` population.
-The anomaly engine and dashboard anomaly population have not started.
-Do not begin those remaining Phase 4 features, the A2 `expense_class` taxonomy, or any later feature until explicitly requested by the maintainer.
+Phase 4 PR1-PR8 are complete: enriched merchant/card due-date ingestion, safe history replay, detector schema/state, the pure recurring detector, post-sync complete/partial persistence, transaction back-links, the `moneta recurring` / `/v1/recurring` read, the `moneta bills` / `/v1/bills` read with dashboard `upcoming_bills` population, and the compute-on-read `moneta anomalies` / `/v1/anomalies` category-spike engine.
+Dashboard anomaly population has not started.
+Do not begin that remaining Phase 4 feature, the A2 `expense_class` taxonomy, or any later feature until explicitly requested by the maintainer.
 
 ## Working Rules
 

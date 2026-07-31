@@ -60,6 +60,7 @@ func NewHandler(db *sql.DB, apiKey string, logger *log.Logger) (http.Handler, er
 		{"/v1/cards", s.handleCards},
 		{"/v1/recurring", s.handleRecurring},
 		{"/v1/bills", s.handleBills},
+		{"/v1/anomalies", s.handleAnomalies},
 		{"/v1/dashboard", s.handleDashboard},
 		{"/v1/trends", s.handleTrends},
 	}
