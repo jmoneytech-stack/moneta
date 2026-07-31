@@ -265,6 +265,24 @@ A card without a balance snapshot stays in the table with `balance: null` and in
 Money remains integer cents internally and renders through `cli.Money`, and APR renders as a decimal fraction rounded to the nearest basis point.
 Exit codes: 0 ok, 1 error, 2 usage.
 
+## Recurring
+
+List detected and manual recurring series after sync:
+
+```sh
+go run ./cmd/moneta recurring
+go run ./cmd/moneta recurring --kind subscription
+go run ./cmd/moneta recurring --json
+```
+
+Rows contain `name`, `kind`, `cadence`, signed `expected`, nullable `next_expected_date`, exact `drift_pct`, `drift`, `active`, and `source`.
+The summary includes the four-field detector freshness object, active detected counts by kind, signed monthly-equivalent subscription and bill value, and the count of noncanonical cadences left unconverted.
+Manual rows are always listed when they match `--kind`, but never enter detected kind counts or monthly-equivalent totals.
+When detector status is `never_run` or `error`, detected rows are omitted while manual rows remain available.
+Status `partial` includes the conservative detected snapshot and projects active next dates at read time without changing stored lifecycle evidence.
+Drift is computed from integer cents with arbitrary-precision arithmetic and is flagged only when magnitude differs by more than 10 percent.
+Exit codes: 0 ok, 1 error, 2 usage.
+
 ## Dashboard
 
 ```sh
@@ -365,6 +383,7 @@ Read routes:
 | `GET /v1/networth` | `as_of` or `history=Nd` |
 | `GET /v1/debts` | none |
 | `GET /v1/cards` | none |
+| `GET /v1/recurring` | optional `kind=subscription\|bill\|income` |
 | `GET /v1/dashboard` | none |
 | `GET /v1/trends` | required `metric=mom\|merchants\|utilization\|savings\|fixed-variable`; `mom`: optional `period`; `merchants`: `period` or `from` + `to`, plus `limit`/`full`; `utilization`: `history`, `period`, or `from` + `to`; `savings` and `fixed-variable`: `period` or `from` + `to`; all: `account` |
 

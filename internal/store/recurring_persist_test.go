@@ -259,11 +259,21 @@ func TestRecurringPersistenceFailureRollsBackSeriesAndState(t *testing.T) {
 	if err := UpsertDetectorState(ctx, db, before); err != nil {
 		t.Fatalf("seed detector state: %v", err)
 	}
+	accountID := insertAccount(t, db, entityID, "rollback-backlink-account")
+	transactionID := insertBacklinkTransaction(
+		t, db, accountID, entityID, "2026-08-01", -1500, "rollback-member", nil,
+	)
+	series := testDetectedSeries(entityID, "rollback example", "monthly", -1500)
+	series.MemberTransactionIDs = []int64{transactionID}
 	if err := PersistRecurringDetection(ctx, db, RecurringDetectionInput{
 		Complete: true,
 		RunAt:    "2026-08-15T12:00:00.000Z",
+		AsOf:     "2026-08-15",
+		Candidates: []recurring.Candidate{{
+			TransactionID: transactionID, EntityID: entityID, Date: "2026-08-01",
+		}},
 		Result: recurring.Result{
-			Series:          []recurring.Series{testDetectedSeries(entityID, "rollback example", "monthly", -1500)},
+			Series:          []recurring.Series{series},
 			SkippedOverflow: -1,
 		},
 	}); err == nil {
@@ -276,6 +286,7 @@ func TestRecurringPersistenceFailureRollsBackSeriesAndState(t *testing.T) {
 	if seriesCount != 0 {
 		t.Errorf("recurring rows after failed persistence = %d, want 0", seriesCount)
 	}
+	assertTransactionRecurringID(t, db, transactionID, nil)
 	after, err := ReadDetectorState(ctx, db)
 	if err != nil {
 		t.Fatalf("ReadDetectorState() after rollback: %v", err)

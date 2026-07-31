@@ -16,8 +16,8 @@ Phase 3 is complete: the D3-1 liability-sign and D3-2 nullable-money foundation,
 Loans stay in `moneta debts`; `moneta cards` is `credit_card` only.
 The dashboard is the explicit `moneta dashboard` subcommand (R3(b)/B1) - bare `moneta` still prints usage and exits 2 - and its `upcoming_bills` and `anomalies` slots are deliberate `null` placeholders for Phase 4 (R5/C1); never fabricate values for them.
 A follow-up polish pass moved the dashboard document into `internal/report` so the CLI and REST payloads are one definition and cannot drift.
-Phase 4 PR1-PR5 are complete: enriched merchant/card due-date ingestion, safe history replay, detector schema/state, the pure recurring detector, and post-sync complete/partial persistence with detector freshness on status and dashboard surfaces.
-Recurring transaction back-links, `moneta recurring`, bills, anomalies, and dashboard slot population have not started.
+Phase 4 PR1-PR6 are complete: enriched merchant/card due-date ingestion, safe history replay, detector schema/state, the pure recurring detector, post-sync complete/partial persistence, transaction back-links, and the `moneta recurring` / `/v1/recurring` read with detector freshness on status and dashboard surfaces.
+Bills, anomalies, and dashboard slot population have not started.
 Do not begin those remaining Phase 4 features, the A2 `expense_class` taxonomy, or any later feature until explicitly requested by the maintainer.
 
 ## Working Rules

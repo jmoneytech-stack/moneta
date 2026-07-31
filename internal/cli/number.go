@@ -21,6 +21,15 @@ func Ratio(numerator, denominator int64, decimalPlaces int) *toon.Number {
 	return &value
 }
 
+// ScaledBigInteger renders value / 10^decimalPlaces as a canonical decimal
+// without narrowing arbitrary-precision derived values to int64.
+func ScaledBigInteger(value *big.Int, decimalPlaces int) toon.Number {
+	if value == nil || decimalPlaces < 0 {
+		return "0"
+	}
+	return scaledNumber(value, decimalPlaces)
+}
+
 // ScaledInteger renders value / 10^decimalPlaces as a canonical decimal.
 // It is useful for rates held as integer basis points. Negative precision
 // returns zero rather than emitting an invalid number.

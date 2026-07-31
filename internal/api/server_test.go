@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmoneytech-stack/moneta/internal/cli"
+	"github.com/jmoneytech-stack/moneta/internal/report"
 	"github.com/jmoneytech-stack/moneta/internal/store"
 )
 
@@ -171,6 +174,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/networth",
 		"/v1/debts",
 		"/v1/cards",
+		"/v1/recurring",
 		"/v1/dashboard",
 		"/v1/trends?metric=mom&period=2026-07",
 		"/v1/trends?metric=merchants&period=2026-07",
@@ -212,6 +216,7 @@ func TestAPIReadRoutes(t *testing.T) {
 		{"/v1/networth?as_of=2026-07-22", []string{`"assets":1200`, `"liabilities":3400`, `"networth":-2200`, `"type":"credit_card"`}},
 		{"/v1/debts", []string{`"total_debt":3400`, `"name":"Credit Example"`, `"utilization":0.34`, `"apr":0.2299`}},
 		{"/v1/cards", []string{`"count":1`, `"total_debt":3400`, `"missing_balance":0`, `"name":"Credit Example"`, `"limit":10000`, `"utilization":0.34`, `"apr":0.2299`, `"due_day":15`}},
+		{"/v1/recurring", []string{`"detector":{"status":"never_run"`, `"recurring":[]`}},
 		{"/v1/trends?metric=mom&period=2026-07", []string{`"metric":"mom"`, `"spend_this":25`, `"spend_prev":15`, `"delta":10`, `"category":"Food and Drink"`}},
 		{"/v1/trends?metric=merchants&period=2026-07", []string{`"metric":"merchants"`, `"spend":25`, `"count":2`, `"merchants":2`, `"merchant":"Grocery Mart"`, `"merchant":"Cafe Example"`}},
 		{"/v1/trends?metric=merchants&from=2026-07-01&to=2026-07-31", []string{`"metric":"merchants"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"spend":25`, `"count":2`}},
@@ -261,6 +266,68 @@ func TestAPIStatusIncludesDetectorState(t *testing.T) {
 	want := `"detector":{"status":"error","last_run_at":"2026-08-15T12:00:00.000Z","last_success_at":"2026-08-01T12:00:00.000Z","last_skipped_overflow":3,"last_error":"recurring detection failed"}`
 	if !strings.Contains(response.Body.String(), want) {
 		t.Errorf("status response missing detector state %q: %s", want, response.Body.String())
+	}
+}
+
+func TestAPIRecurringMirrorsCLI(t *testing.T) {
+	db := openAPITestDB(t)
+	ctx := context.Background()
+	entityID, err := store.EnsureDefaultEntity(ctx, db)
+	if err != nil {
+		t.Fatalf("EnsureDefaultEntity() error: %v", err)
+	}
+	if err := store.UpsertDetectorState(ctx, db, store.DetectorState{
+		Status: "ok", LastRunAt: "2026-08-15T12:00:00.000Z",
+		LastSuccessAt: "2026-08-15T12:00:00.000Z",
+	}); err != nil {
+		t.Fatalf("seed detector state: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO recurring_items (
+			entity_id, name, kind, cadence, expected_cents, next_expected_date,
+			source, is_active, detect_key, amount_sign, last_matched_cents,
+			schedule_anchor_day
+		) VALUES (?, 'Streambox Example', 'subscription', 'monthly', -10000,
+			'2026-09-01', 'detected', 1, 'streambox example', -1, -12000, 1)
+	`, entityID); err != nil {
+		t.Fatalf("seed API recurring row: %v", err)
+	}
+	fixedNow := time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)
+	s := &server{
+		db:         db,
+		apiKeyHash: sha256.Sum256([]byte(testAPIKey)),
+		logger:     log.New(io.Discard, "", 0),
+		now:        func() time.Time { return fixedNow },
+	}
+	handler := s.authenticate(s.recoverPanics(http.HandlerFunc(s.handleRecurring)))
+	response := performRequest(handler, "/v1/recurring", testAPIKey)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/recurring = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	storeReport, err := store.ReadRecurring(ctx, db, store.RecurringFilter{AsOf: "2026-08-15"})
+	if err != nil {
+		t.Fatalf("ReadRecurring() expected document: %v", err)
+	}
+	var expected bytes.Buffer
+	if err := cli.Render(&expected, report.Recurring(storeReport), cli.FormatJSON); err != nil {
+		t.Fatalf("render expected recurring JSON: %v", err)
+	}
+	if response.Body.String() != expected.String() {
+		t.Errorf("API recurring != shared CLI document:\nAPI: %s\nCLI: %s",
+			response.Body.String(), expected.String())
+	}
+
+	for _, path := range []string{
+		"/v1/recurring?unknown=1",
+		"/v1/recurring?kind=other",
+	} {
+		response := performRequest(handler, path, testAPIKey)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("GET %s = %d, want 400: %s", path, response.Code, response.Body.String())
+		}
+	}
+	if response := performRequest(handler, "/v1/recurring", "wrong-key"); response.Code != http.StatusUnauthorized {
+		t.Errorf("unauthorized recurring status = %d, want 401", response.Code)
 	}
 }
 
@@ -581,6 +648,7 @@ func TestAPIReturnsJSONForUnknownPathsAndMethods(t *testing.T) {
 	}{
 		{http.MethodGet, "/v1/unknown", http.StatusNotFound, "{\"error\":\"not found\"}\n", ""},
 		{http.MethodPost, "/v1/status", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
+		{http.MethodPost, "/v1/recurring", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
 	}
 	for _, test := range tests {
 		request := httptest.NewRequest(test.method, test.path, nil)
@@ -619,6 +687,8 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/networth?unexpected=value", "unknown query parameter"},
 		{"/v1/debts?unexpected=value", "unknown query parameter"},
 		{"/v1/cards?unexpected=value", "unknown query parameter"},
+		{"/v1/recurring?kind=other", "kind must be"},
+		{"/v1/recurring?unexpected=value", "unknown query parameter"},
 		{"/v1/dashboard?unexpected=value", "unknown query parameter"},
 		{"/v1/trends", "metric"},
 		{"/v1/trends?metric=cards", "unknown metric"},
