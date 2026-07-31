@@ -583,6 +583,142 @@ func TestProviderSyncThroughIngestReplacesPendingWithPosted(t *testing.T) {
 	}
 }
 
+func TestProviderSyncResetCursorAccumulatesMultiplePages(t *testing.T) {
+	gateway := &fakeGateway{
+		syncPages: map[string]rawSyncPage{
+			"": {
+				Added: []rawTransaction{{
+					ID: "historical-1", AccountID: "checking-1", Date: "2026-06-01",
+					Name: "CAFE 1234", MerchantName: "Cafe Example",
+					OriginalDescription: "TST* CAFE 1234", Currency: "USD",
+				}},
+				NextCursor: "replay-page-2",
+				HasMore:    true,
+			},
+			"replay-page-2": {
+				Modified: []rawTransaction{{
+					ID: "historical-2", AccountID: "checking-1", Date: "2026-07-01",
+					Name: "CAFE 5678", MerchantName: "Cafe Example",
+					OriginalDescription: "TST* CAFE 5678", Currency: "USD",
+				}},
+				NextCursor: "replay-final",
+			},
+		},
+		accountsResult: []rawAccount{{
+			ID: "checking-1", Name: "Test Checking", Type: "depository", Subtype: "checking", Currency: "USD",
+		}},
+		liabilitiesError: &APIError{Code: "NO_LIABILITY_ACCOUNTS"},
+	}
+	provider := mustTestProvider(t, gateway)
+
+	batch, err := provider.Sync(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Sync(reset) error: %v", err)
+	}
+	if !reflect.DeepEqual(gateway.syncCursors, []string{"", "replay-page-2"}) {
+		t.Errorf("reset pagination cursors = %v, want empty then replay-page-2", gateway.syncCursors)
+	}
+	if len(batch.Added) != 1 || len(batch.Modified) != 1 || batch.NextCursor != "replay-final" {
+		t.Fatalf("reset batch = added %d / modified %d / cursor %q, want 1/1/replay-final",
+			len(batch.Added), len(batch.Modified), batch.NextCursor)
+	}
+	if batch.Added[0].MerchantDisplay != "Cafe Example" ||
+		batch.Modified[0].MerchantDisplay != "Cafe Example" {
+		t.Errorf("reset merchant displays = %q/%q, want Cafe Example/Cafe Example",
+			batch.Added[0].MerchantDisplay, batch.Modified[0].MerchantDisplay)
+	}
+
+	// The whole accumulated replay is one ApplySync commit, not one commit per
+	// provider page, and the enriched display reaches historical rows.
+	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "moneta.db"))
+	if err != nil {
+		t.Fatalf("open replay database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	entityID, err := store.EnsureDefaultEntity(context.Background(), db)
+	if err != nil {
+		t.Fatalf("ensure replay entity: %v", err)
+	}
+	itemResult, err := db.Exec(`
+		INSERT INTO provider_items (provider, item_id, institution, access_token_enc)
+		VALUES ('plaid', 'item-replay', 'Fake Bank', x'01')
+	`)
+	if err != nil {
+		t.Fatalf("insert replay provider item: %v", err)
+	}
+	itemID, err := itemResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("read replay provider item id: %v", err)
+	}
+	if _, err := core.NewIngestor(db).ApplySync(context.Background(), core.SyncTarget{
+		ProviderItemID:  itemID,
+		DefaultEntityID: entityID,
+		ExpectedCursor:  "",
+	}, batch); err != nil {
+		t.Fatalf("apply accumulated replay: %v", err)
+	}
+	var transactions, importRuns int
+	var minDisplay, maxDisplay, storedCursor string
+	if err := db.QueryRow(`
+		SELECT COUNT(*), MIN(merchant_display), MAX(merchant_display)
+		FROM transactions
+	`).Scan(&transactions, &minDisplay, &maxDisplay); err != nil {
+		t.Fatalf("read replay transactions: %v", err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM import_runs").Scan(&importRuns); err != nil {
+		t.Fatalf("count replay import runs: %v", err)
+	}
+	if err := db.QueryRow(
+		"SELECT sync_cursor FROM provider_items WHERE id = ?", itemID,
+	).Scan(&storedCursor); err != nil {
+		t.Fatalf("read replay cursor: %v", err)
+	}
+	if transactions != 2 || importRuns != 1 || minDisplay != "Cafe Example" ||
+		maxDisplay != "Cafe Example" || storedCursor != "replay-final" {
+		t.Errorf("applied replay = tx %d / runs %d / display %q..%q / cursor %q",
+			transactions, importRuns, minDisplay, maxDisplay, storedCursor)
+	}
+}
+
+func TestProviderSyncResetMutationRestartsFromEmptyCursor(t *testing.T) {
+	call := 0
+	gateway := &fakeGateway{
+		syncFunc: func(_ context.Context, _, cursor string) (rawSyncPage, error) {
+			call++
+			switch call {
+			case 1:
+				if cursor != "" {
+					t.Fatalf("initial reset cursor = %q, want empty", cursor)
+				}
+				return rawSyncPage{NextCursor: "unstable-page-2", HasMore: true}, nil
+			case 2:
+				return rawSyncPage{}, &APIError{Code: errorSyncMutation}
+			case 3:
+				if cursor != "" {
+					t.Fatalf("reset restart cursor = %q, want original empty cursor", cursor)
+				}
+				return rawSyncPage{NextCursor: "stable-final"}, nil
+			default:
+				t.Fatalf("unexpected sync call %d", call)
+				return rawSyncPage{}, nil
+			}
+		},
+		liabilitiesError: &APIError{Code: "NO_LIABILITY_ACCOUNTS"},
+	}
+	provider := mustTestProvider(t, gateway)
+
+	batch, err := provider.Sync(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Sync(reset mutation) error: %v", err)
+	}
+	if batch.NextCursor != "stable-final" {
+		t.Errorf("NextCursor = %q, want stable-final", batch.NextCursor)
+	}
+	if !reflect.DeepEqual(gateway.syncCursors, []string{"", "unstable-page-2", ""}) {
+		t.Errorf("reset mutation cursors = %v, want empty/unstable-page-2/empty", gateway.syncCursors)
+	}
+}
+
 func TestProviderSyncRestartsWholePaginationLoopOnMutation(t *testing.T) {
 	call := 0
 	gateway := &fakeGateway{
