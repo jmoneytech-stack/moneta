@@ -72,9 +72,15 @@ After linking, sync with the same environment (`PLAID_CLIENT_ID`, `PLAID_SECRET`
 
 ```sh
 go run ./cmd/moneta sync
+go run ./cmd/moneta sync --reset-cursor
 ```
 
 `moneta sync` pulls incremental transactions, balances, and liabilities for every linked Plaid item, or one item with `--item <item-id>`.
+After upgrading from a pre-Phase-4 database, run one unscoped `moneta sync --reset-cursor` to re-pull available transaction history for every linked item so historical rows gain `merchant_display`.
+Plaid links request 730 days of transaction history, covering the planned 14-month recurring-detection lookback with margin.
+Reset mode sends an empty pull cursor to Plaid but retains the stored database cursor as the ingest CAS expectation; the checkpoint advances only after the complete replay commits, and remains unchanged on pull or ingest failure.
+If Plaid reports a pagination mutation during reset, replay restarts from the original empty pull cursor and may fetch the full available history again; the stored checkpoint remains intact.
+If recovery requires scoped `--item <item-id> --reset-cursor` runs with multiple linked items, finish with a plain unscoped `moneta sync`; scoped runs remain partial for the later Phase 4 detector.
 Each item prints a one-line summary, including the count of single-row poison records skipped so the sync could still advance.
 Batches and cursors commit atomically, so re-running after a failure is safe.
 
@@ -362,7 +368,8 @@ That opt-in logs a prominent exposure warning; Moneta does not provide TLS, publ
 
 ## Library sync path
 
-`moneta sync` wraps the library sync path: product code loads a linked connection with `store.GetProviderItem` and passes it to `core.SyncProviderItem` with the secret cipher and provider constructor.
+`moneta sync` wraps the library sync path: product code loads a linked connection with `store.GetProviderItem` and passes it to `core.SyncProviderItem` with the secret cipher, a pull cursor, the loaded stored-cursor CAS expectation, and the provider constructor.
+Normal sync uses the loaded `item.SyncCursor` for both the pull and ingest expectation; `--reset-cursor` uses an empty pull cursor while preserving `item.SyncCursor` as the database CAS expectation.
 `SyncProviderItem` decrypts the credential in memory, clears the plaintext bytes before returning, syncs from the stored cursor, bootstraps the single Phase 1 personal entity when needed, and applies the batch and cursor atomically.
 Fresh databases require no hand-written entity SQL.
 A successful sync returns `SyncResult.Skipped`, the merged list of provider and ingest records dropped as single-row poison; an empty list means nothing was dropped.

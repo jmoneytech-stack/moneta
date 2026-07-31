@@ -68,6 +68,21 @@ func TestRunSyncRequiresDatabasePath(t *testing.T) {
 // TestRunUsageErrorsExitTwoAcrossCommands pins the shared contract: unknown
 // flags and stray positional arguments are usage errors (exit 2) on every
 // command.
+func TestRunSyncAcceptsResetCursorFlag(t *testing.T) {
+	t.Setenv(databasePathEnvironment, "")
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"sync", "--reset-cursor"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2 for missing database", code)
+	}
+	if !strings.Contains(stderr.String(), "MONETA_DB_PATH or --db is required") {
+		t.Errorf("run() error = %q, want database requirement after flag parsing", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "flag provided but not defined") {
+		t.Errorf("--reset-cursor was rejected as unknown: %q", stderr.String())
+	}
+}
+
 func TestRunUsageErrorsExitTwoAcrossCommands(t *testing.T) {
 	tests := []struct {
 		name string
@@ -175,6 +190,45 @@ func TestSyncItemsAppliesBatchAndReportsSkips(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("transaction count = %d, want 1", count)
+	}
+}
+
+func TestSyncItemsResetUsesEmptyPullCursorAndStoredCASCursor(t *testing.T) {
+	db, cipher, item := newSyncTestDB(t)
+	if _, err := db.Exec(`
+		UPDATE provider_items SET sync_cursor = 'cursor-stored' WHERE id = ?
+	`, item.DatabaseID); err != nil {
+		t.Fatalf("set stored cursor: %v", err)
+	}
+	item.SyncCursor = "cursor-stored"
+	provider := &fakeSyncProvider{batch: &canon.SyncBatch{NextCursor: "cursor-replayed"}}
+
+	var stdout, stderr bytes.Buffer
+	if err := syncItemsWithReset(
+		context.Background(),
+		db,
+		cipher,
+		[]store.ProviderItem{item},
+		func(store.ProviderItem, string) (canon.Provider, error) {
+			return provider, nil
+		},
+		true,
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("syncItems(reset) error: %v (stderr %q)", err, stderr.String())
+	}
+	if len(provider.syncCursors) != 1 || provider.syncCursors[0] != "" {
+		t.Errorf("provider cursors = %v, want one empty pull cursor", provider.syncCursors)
+	}
+	var stored string
+	if err := db.QueryRow(
+		"SELECT sync_cursor FROM provider_items WHERE id = ?", item.DatabaseID,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read stored cursor: %v", err)
+	}
+	if stored != "cursor-replayed" {
+		t.Errorf("stored cursor = %q, want cursor-replayed", stored)
 	}
 }
 
@@ -378,8 +432,9 @@ func newSyncTestDB(t *testing.T) (*sql.DB, *secret.Cipher, store.ProviderItem) {
 }
 
 type fakeSyncProvider struct {
-	batch   *canon.SyncBatch
-	syncErr error
+	batch       *canon.SyncBatch
+	syncErr     error
+	syncCursors []string
 }
 
 func (p *fakeSyncProvider) Name() string {
@@ -394,7 +449,8 @@ func (p *fakeSyncProvider) Connections(context.Context) ([]canon.ConnectionStatu
 	return nil, nil
 }
 
-func (p *fakeSyncProvider) Sync(context.Context, string) (*canon.SyncBatch, error) {
+func (p *fakeSyncProvider) Sync(_ context.Context, cursor string) (*canon.SyncBatch, error) {
+	p.syncCursors = append(p.syncCursors, cursor)
 	return p.batch, p.syncErr
 }
 

@@ -20,13 +20,18 @@ type SyncResult struct {
 }
 
 // SyncProviderItem decrypts one stored credential, builds its provider, pulls
-// the current cursor, bootstraps the Phase 1 entity, and atomically applies the
-// returned batch. Decrypted credential bytes are cleared before return.
+// from pullCursor, bootstraps the Phase 1 entity, and atomically applies the
+// returned batch against expectedStoredCursor. Callers may pass an empty pull
+// cursor with the loaded database cursor as the expectation for a safe history
+// replay without clearing the checkpoint. Decrypted credential bytes are
+// cleared before return.
 func SyncProviderItem(
 	ctx context.Context,
 	db *sql.DB,
 	cipher *secret.Cipher,
 	item store.ProviderItem,
+	pullCursor string,
+	expectedStoredCursor string,
 	buildProvider func(accessToken string) (canon.Provider, error),
 ) (*SyncResult, error) {
 	if db == nil {
@@ -49,13 +54,23 @@ func SyncProviderItem(
 	if err != nil {
 		return nil, fmt.Errorf("decrypt provider item access token: %w", err)
 	}
-	return syncProviderItemWithPlaintext(ctx, db, item, plaintext, buildProvider)
+	return syncProviderItemWithPlaintext(
+		ctx,
+		db,
+		item,
+		pullCursor,
+		expectedStoredCursor,
+		plaintext,
+		buildProvider,
+	)
 }
 
 func syncProviderItemWithPlaintext(
 	ctx context.Context,
 	db *sql.DB,
 	item store.ProviderItem,
+	pullCursor string,
+	expectedStoredCursor string,
 	plaintext []byte,
 	buildProvider func(accessToken string) (canon.Provider, error),
 ) (*SyncResult, error) {
@@ -68,7 +83,7 @@ func syncProviderItemWithPlaintext(
 	if provider == nil {
 		return nil, fmt.Errorf("provider builder returned nil")
 	}
-	batch, err := provider.Sync(ctx, item.SyncCursor)
+	batch, err := provider.Sync(ctx, pullCursor)
 	if err != nil {
 		return nil, fmt.Errorf("sync provider item: %w", err)
 	}
@@ -80,7 +95,7 @@ func syncProviderItemWithPlaintext(
 	ingestResult, err := NewIngestor(db).ApplySync(ctx, SyncTarget{
 		ProviderItemID:  item.DatabaseID,
 		DefaultEntityID: defaultEntityID,
-		ExpectedCursor:  item.SyncCursor,
+		ExpectedCursor:  expectedStoredCursor,
 	}, batch)
 	if errors.Is(err, ErrCursorChanged) {
 		return nil, ErrCursorChanged

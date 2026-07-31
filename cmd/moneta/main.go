@@ -124,7 +124,7 @@ func runLink(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 
 	linker, err := plaid.NewLinker(config, database, cipher)
 	if err != nil {
@@ -178,6 +178,11 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		"",
 		"sync only the Plaid item with this id (default: all linked items)",
 	)
+	resetCursor := flags.Bool(
+		"reset-cursor",
+		false,
+		"re-pull full available transaction history without clearing the stored checkpoint",
+	)
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -208,7 +213,7 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 
 	var items []store.ProviderItem
 	if *itemID != "" {
@@ -230,12 +235,12 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if err := syncItems(ctx, database, cipher, items, func(
+	if err := syncItemsWithReset(ctx, database, cipher, items, func(
 		item store.ProviderItem,
 		accessToken string,
 	) (canon.Provider, error) {
 		return plaid.New(config, item.ItemID, item.Institution, accessToken)
-	}, stdout, stderr); err != nil {
+	}, *resetCursor, stdout, stderr); err != nil {
 		if !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 		}
@@ -255,6 +260,20 @@ func syncItems(
 	buildProvider func(item store.ProviderItem, accessToken string) (canon.Provider, error),
 	stdout, stderr io.Writer,
 ) error {
+	return syncItemsWithReset(
+		ctx, db, cipher, items, buildProvider, false, stdout, stderr,
+	)
+}
+
+func syncItemsWithReset(
+	ctx context.Context,
+	db *sql.DB,
+	cipher *secret.Cipher,
+	items []store.ProviderItem,
+	buildProvider func(item store.ProviderItem, accessToken string) (canon.Provider, error),
+	resetCursor bool,
+	stdout, stderr io.Writer,
+) error {
 	if len(items) == 0 {
 		fmt.Fprintln(stdout, "No linked provider items. Run 'moneta link' to connect an institution.")
 		return nil
@@ -263,11 +282,23 @@ func syncItems(
 	synced := 0
 	skipped := 0
 	for _, item := range items {
-		result, err := core.SyncProviderItem(ctx, db, cipher, item, func(
-			accessToken string,
-		) (canon.Provider, error) {
-			return buildProvider(item, accessToken)
-		})
+		pullCursor := item.SyncCursor
+		if resetCursor {
+			pullCursor = ""
+		}
+		result, err := core.SyncProviderItem(
+			ctx,
+			db,
+			cipher,
+			item,
+			pullCursor,
+			item.SyncCursor,
+			func(
+				accessToken string,
+			) (canon.Provider, error) {
+				return buildProvider(item, accessToken)
+			},
+		)
 		if err != nil {
 			// A reauth-class failure durably marks the Item so 'moneta
 			// status' can exit 3. This write runs after the failed sync
