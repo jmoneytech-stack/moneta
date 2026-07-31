@@ -10,10 +10,6 @@ import (
 	"github.com/jmoneytech-stack/moneta/internal/toon"
 )
 
-// Phase4Note explains the one remaining empty dashboard slot. The anomaly
-// read has not landed, so it remains null instead of fabricating a value.
-const Phase4Note = "anomalies are available in a later phase"
-
 // cashNote states the deliberate narrowness of the cash proxy: investments and
 // other assets reach net worth but are not spendable cash.
 const cashNote = "checking + savings latest balances"
@@ -62,9 +58,17 @@ func Dashboard(dashboard store.DashboardReport) toon.Object {
 		}},
 		{Key: "recurring_detect", Value: Detector(dashboard.RecurringDetect, false)},
 		{Key: "upcoming_bills", Value: dashboardUpcomingBills(dashboard)},
-		{Key: "anomalies", Value: nil},
-		{Key: "phase4_note", Value: Phase4Note},
+		{Key: "anomalies", Value: dashboardAnomalies(dashboard)},
 		{Key: "hint", Value: dashboardHint(dashboard)},
+	}
+}
+
+func dashboardAnomalies(dashboard store.DashboardReport) toon.Object {
+	return toon.Object{
+		{Key: "period", Value: dashboard.Anomalies.Period},
+		{Key: "count", Value: len(dashboard.Anomalies.Items)},
+		{Key: "top", Value: anomaliesTable(dashboard.Anomalies.Items, dashboardAnomaliesLimit)},
+		{Key: "skipped_overflow", Value: dashboard.Anomalies.SkippedOverflow},
 	}
 }
 

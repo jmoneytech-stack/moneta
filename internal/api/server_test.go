@@ -476,7 +476,7 @@ func TestAPIAnomaliesMirrorsCLI(t *testing.T) {
 	}
 }
 
-func TestAPIDashboardComposesSectionsWithPlaceholders(t *testing.T) {
+func TestAPIDashboardComposesFinalPhase4Sections(t *testing.T) {
 	db := openAPITestDB(t)
 	seedAPITestDB(t, db)
 	fixedNow := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
@@ -502,17 +502,29 @@ func TestAPIDashboardComposesSectionsWithPlaceholders(t *testing.T) {
 		`"cashflow_month":{"inflow":1000,"outflow":25,"net":975,"savings_rate":0.975,"count":3}`,
 		`"sync":{"items":1,"needs_attention":0,"login_required":0}`,
 		`"upcoming_bills":null`,
-		`"anomalies":null`,
-		`"phase4_note":"anomalies are available in a later phase"`,
+		`"anomalies":{"period":"2026-06","count":0,"top":[],"skipped_overflow":0}`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard response missing %q: %s", want, body)
 		}
 	}
-	for _, unwanted := range []string{`"upcoming_bills":0`, `"anomalies":0`} {
+	for _, unwanted := range []string{`"upcoming_bills":0`, `"anomalies":null`, `"phase4_note"`} {
 		if strings.Contains(body, unwanted) {
-			t.Errorf("dashboard fabricates a Phase 4 value %q: %s", unwanted, body)
+			t.Errorf("dashboard contains obsolete/dishonest value %q: %s", unwanted, body)
 		}
+	}
+	dashboard, err := store.ReadDashboard(context.Background(), db, store.DashboardFilter{
+		From: "2026-07-01", To: "2026-07-31", BillsAsOf: "2026-07-24",
+	})
+	if err != nil {
+		t.Fatalf("ReadDashboard() expected REST document: %v", err)
+	}
+	var expected bytes.Buffer
+	if err := cli.Render(&expected, report.Dashboard(dashboard), cli.FormatJSON); err != nil {
+		t.Fatalf("render expected dashboard JSON: %v", err)
+	}
+	if body != expected.String() {
+		t.Errorf("REST dashboard != shared CLI document:\nREST: %s\nCLI: %s", body, expected.String())
 	}
 }
 

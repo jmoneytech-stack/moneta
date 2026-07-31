@@ -42,7 +42,8 @@ func populatedDashboard() store.DashboardReport {
 		Cashflow: store.CashflowSummary{
 			Count: 2, InflowCents: 100000, OutflowCents: 2500, NetCents: 97500,
 		},
-		Sync: store.DashboardSync{Items: 1},
+		Sync:      store.DashboardSync{Items: 1},
+		Anomalies: store.AnomalyReport{Period: "2026-06"},
 	}
 }
 
@@ -57,8 +58,7 @@ func TestDashboardDocumentShape(t *testing.T) {
 		`"cashflow_month":{"inflow":1000,"outflow":25,"net":975,"savings_rate":0.975,"count":2}`,
 		`"sync":{"items":1,"needs_attention":0,"login_required":0}`,
 		`"upcoming_bills":null`,
-		`"anomalies":null`,
-		`"phase4_note":"` + Phase4Note + `"`,
+		`"anomalies":{"period":"2026-06","count":0,"top":[],"skipped_overflow":0}`,
 		`"hint":"run moneta spend or moneta trends for the breakdown behind these totals"`,
 	} {
 		if !strings.Contains(out, want) {
@@ -96,25 +96,30 @@ func TestReportDashboardIncludesRecurringDetectKey(t *testing.T) {
 	}
 }
 
-func TestDashboardAbsentBillsAndUnimplementedAnomaliesStayNull(t *testing.T) {
+func TestDashboardAbsentBillsRemainNullAndAnomaliesAlwaysObject(t *testing.T) {
 	for name, dashboard := range map[string]store.DashboardReport{
 		"populated": populatedDashboard(),
-		"empty":     {From: "2026-07-01", To: "2026-07-31"},
+		"empty": {
+			From: "2026-07-01", To: "2026-07-31",
+			Anomalies: store.AnomalyReport{Period: "2026-06"},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out := renderJSON(t, dashboard)
-			for _, want := range []string{`"upcoming_bills":null`, `"anomalies":null`} {
+			for _, want := range []string{
+				`"upcoming_bills":null`,
+				`"anomalies":{"period":"2026-06","count":0,"top":[],"skipped_overflow":0}`,
+			} {
 				if !strings.Contains(out, want) {
 					t.Errorf("missing %q:\n%s", want, out)
 				}
 			}
 			for _, unwanted := range []string{
-				`"upcoming_bills":0`, `"anomalies":0`,
-				`"upcoming_bills":[]`, `"anomalies":[]`,
-				`"upcoming_bills":""`, `"anomalies":""`,
+				`"upcoming_bills":0`, `"upcoming_bills":[]`, `"upcoming_bills":""`,
+				`"anomalies":null`, `"phase4_note"`,
 			} {
 				if strings.Contains(out, unwanted) {
-					t.Errorf("fabricated Phase 4 value %q:\n%s", unwanted, out)
+					t.Errorf("dishonest dashboard value %q:\n%s", unwanted, out)
 				}
 			}
 		})
@@ -152,9 +157,42 @@ func TestDashboardUpcomingBillsEmptyAndCappedAtFive(t *testing.T) {
 	if strings.Contains(out, `"name":"Bill 6"`) {
 		t.Errorf("dashboard bills exceeded five-row cap:\n%s", out)
 	}
-	if !strings.Contains(out, `"anomalies":null`) ||
-		!strings.Contains(out, `"phase4_note":"anomalies are available in a later phase"`) {
-		t.Errorf("dashboard anomaly placeholder/note changed incorrectly:\n%s", out)
+	if !strings.Contains(out, `"anomalies":{"period":"2026-06","count":0,"top":[],"skipped_overflow":0}`) ||
+		strings.Contains(out, `"phase4_note"`) {
+		t.Errorf("dashboard anomaly object/final cleanup changed incorrectly:\n%s", out)
+	}
+}
+
+func TestDashboardAnomaliesTopThreeAndSkippedOverflow(t *testing.T) {
+	dashboard := populatedDashboard()
+	dashboard.Anomalies = store.AnomalyReport{
+		Period: "2026-06", SkippedOverflow: 2,
+		Items: []store.AnomalyItem{
+			{Category: "Spike 1", SpendCents: 31000, BaselineCents: 10000, DeltaCents: 21000},
+			{Category: "Spike 2", SpendCents: 24000, BaselineCents: 8000, DeltaCents: 16000},
+			{Category: "Spike 3", SpendCents: 15000, BaselineCents: 5000, DeltaCents: 10000},
+			{Category: "Spike 4", SpendCents: 12000, BaselineCents: 4000, DeltaCents: 8000},
+		},
+	}
+	out := renderJSON(t, dashboard)
+	if !strings.Contains(out, `"anomalies":{"period":"2026-06","count":4,"top":[`) ||
+		!strings.Contains(out, `"skipped_overflow":2`) {
+		t.Errorf("dashboard anomaly summary missing period/count/skips:\n%s", out)
+	}
+	for _, want := range []string{
+		`"category":"Spike 1","spend":310,"baseline":100,"deviation_ratio":2.1`,
+		`"category":"Spike 2","spend":240,"baseline":80,"deviation_ratio":2`,
+		`"category":"Spike 3","spend":150,"baseline":50,"deviation_ratio":2`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dashboard anomaly top missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `"category":"Spike 4"`) {
+		t.Errorf("dashboard anomaly top exceeded three rows:\n%s", out)
+	}
+	if strings.Contains(out, `"phase4_note"`) {
+		t.Errorf("dashboard retained phase4_note:\n%s", out)
 	}
 }
 

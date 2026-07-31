@@ -16,11 +16,11 @@ Phase 3 is complete: the D3-1 liability-sign and D3-2 nullable-money foundation,
 Loans stay in `moneta debts`; `moneta cards` is `credit_card` only.
 The dashboard is the explicit `moneta dashboard` subcommand (R3(b)/B1) - bare `moneta` still prints usage and exits 2.
 Its `upcoming_bills` slot follows the detector gate: `null` for `never_run`/`error`, and an honest empty or populated projection for `ok`/`partial`.
-Its `anomalies` slot remains a deliberate `null` placeholder; never fabricate a value for it.
+Its `anomalies` slot always contains the previous-complete-month anomaly projection with period, count, top three rows, and overflow skips.
 A follow-up polish pass moved the dashboard document into `internal/report` so the CLI and REST payloads are one definition and cannot drift.
-Phase 4 PR1-PR8 are complete: enriched merchant/card due-date ingestion, safe history replay, detector schema/state, the pure recurring detector, post-sync complete/partial persistence, transaction back-links, the `moneta recurring` / `/v1/recurring` read, the `moneta bills` / `/v1/bills` read with dashboard `upcoming_bills` population, and the compute-on-read `moneta anomalies` / `/v1/anomalies` category-spike engine.
-Dashboard anomaly population has not started.
-Do not begin that remaining Phase 4 feature, the A2 `expense_class` taxonomy, or any later feature until explicitly requested by the maintainer.
+Phase 4 is complete through PR9: enriched merchant/card due-date ingestion, safe history replay, detector schema/state, the pure recurring detector, post-sync complete/partial persistence, transaction back-links, the `moneta recurring` / `/v1/recurring` read, the `moneta bills` / `/v1/bills` read with dashboard `upcoming_bills` population, the compute-on-read `moneta anomalies` / `/v1/anomalies` category-spike engine, and the final dashboard anomaly projection.
+Both dashboard Phase 4 slots are now honest, so `phase4_note` no longer exists.
+Do not begin the A2 `expense_class` taxonomy or any later feature until explicitly requested by the maintainer.
 
 ## Working Rules
 
