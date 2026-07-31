@@ -67,8 +67,6 @@ func TestDashboardDocumentShape(t *testing.T) {
 	}
 }
 
-// The Phase 4 slots must never render as a value an agent could read as real
-// data. Zero and an empty list are both indistinguishable from "none found".
 func TestReportDashboardIncludesRecurringDetectKey(t *testing.T) {
 	dashboard := populatedDashboard()
 	dashboard.RecurringDetect = store.DetectorState{
@@ -98,7 +96,7 @@ func TestReportDashboardIncludesRecurringDetectKey(t *testing.T) {
 	}
 }
 
-func TestDashboardPhase4SlotsAreAlwaysNull(t *testing.T) {
+func TestDashboardAbsentBillsAndUnimplementedAnomaliesStayNull(t *testing.T) {
 	for name, dashboard := range map[string]store.DashboardReport{
 		"populated": populatedDashboard(),
 		"empty":     {From: "2026-07-01", To: "2026-07-31"},
@@ -120,6 +118,43 @@ func TestDashboardPhase4SlotsAreAlwaysNull(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDashboardUpcomingBillsEmptyAndCappedAtFive(t *testing.T) {
+	empty := populatedDashboard()
+	empty.RecurringDetect.Status = "ok"
+	empty.UpcomingBills = &store.BillsReport{AsOf: "2026-07-01", Through: "2026-07-31", Days: 30}
+	out := renderJSON(t, empty)
+	if !strings.Contains(out, `"upcoming_bills":{"count":0,"bills":[]}`) {
+		t.Errorf("empty upcoming bills did not render an empty table:\n%s", out)
+	}
+
+	populated := populatedDashboard()
+	populated.RecurringDetect.Status = "partial"
+	populated.UpcomingBills = &store.BillsReport{Items: []store.BillItem{
+		{Date: "2026-07-01", Name: "Bill 1", Source: "recurring", Kind: "bill", DateSource: "detected_schedule", DueStatus: "due"},
+		{Date: "2026-07-02", Name: "Bill 2", Source: "recurring", Kind: "bill", DateSource: "detected_schedule", DueStatus: "upcoming"},
+		{Date: "2026-07-03", Name: "Bill 3", Source: "card_due", Kind: "bill", DateSource: "provider_reported", DueStatus: "upcoming"},
+		{Date: "2026-07-04", Name: "Bill 4", Source: "card_due", Kind: "bill", DateSource: "day_of_month_estimate", DueStatus: "upcoming"},
+		{Date: "2026-07-05", Name: "Bill 5", Source: "recurring", Kind: "subscription", DateSource: "detected_schedule", DueStatus: "upcoming"},
+		{Date: "2026-07-06", Name: "Bill 6", Source: "recurring", Kind: "bill", DateSource: "detected_schedule", DueStatus: "upcoming"},
+	}}
+	out = renderJSON(t, populated)
+	if !strings.Contains(out, `"upcoming_bills":{"count":6,"bills":[`) {
+		t.Errorf("populated upcoming bills missing uncapped count:\n%s", out)
+	}
+	for _, name := range []string{"Bill 1", "Bill 2", "Bill 3", "Bill 4", "Bill 5"} {
+		if !strings.Contains(out, `"name":"`+name+`"`) {
+			t.Errorf("dashboard bills missing %s:\n%s", name, out)
+		}
+	}
+	if strings.Contains(out, `"name":"Bill 6"`) {
+		t.Errorf("dashboard bills exceeded five-row cap:\n%s", out)
+	}
+	if !strings.Contains(out, `"anomalies":null`) ||
+		!strings.Contains(out, `"phase4_note":"anomalies are available in a later phase"`) {
+		t.Errorf("dashboard anomaly placeholder/note changed incorrectly:\n%s", out)
 	}
 }
 

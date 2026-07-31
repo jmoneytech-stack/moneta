@@ -257,20 +257,21 @@ func projectRecurringNextDate(
 	if err != nil {
 		return "", err
 	}
-	graceDays := 0
+	graceDays, knownCadence := recurringGraceDays(cadence)
+	if !knownCadence {
+		return stored, nil
+	}
 	stepDays := 0
 	stepMonths := 0
 	switch cadence {
 	case "weekly":
-		graceDays, stepDays = 1, 7
+		stepDays = 7
 	case "biweekly":
-		graceDays, stepDays = 1, 14
+		stepDays = 14
 	case "monthly":
-		graceDays, stepMonths = 3, 1
+		stepMonths = 1
 	case "quarterly":
-		graceDays, stepMonths = 3, 3
-	default:
-		return stored, nil
+		stepMonths = 3
 	}
 	anchorDay := next.Day()
 	if anchor.Valid && anchor.Int64 >= 1 && anchor.Int64 <= 31 {
@@ -289,6 +290,17 @@ func projectRecurringNextDate(
 		next = time.Date(targetMonth.Year(), targetMonth.Month(), day, 0, 0, 0, 0, time.UTC)
 	}
 	return next.Format(time.DateOnly), nil
+}
+
+func recurringGraceDays(cadence string) (int, bool) {
+	switch cadence {
+	case "weekly", "biweekly":
+		return 1, true
+	case "monthly", "quarterly":
+		return 3, true
+	default:
+		return 0, false
+	}
 }
 
 func recurringDaysInMonth(year int, month time.Month) int {

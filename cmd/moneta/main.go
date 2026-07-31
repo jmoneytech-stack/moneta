@@ -66,6 +66,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runCards(ctx, args[1:], stdout, stderr)
 	case "recurring":
 		return runRecurring(ctx, args[1:], stdout, stderr)
+	case "bills":
+		return runBills(ctx, args[1:], stdout, stderr)
 	case "dashboard":
 		return runDashboard(ctx, args[1:], stdout, stderr)
 	case "serve":
@@ -521,6 +523,7 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "  debts     list credit-card and loan balances with terms (TOON on stdout)")
 	fmt.Fprintln(writer, "  cards     list credit cards with limit, utilization, APR, and due day (TOON on stdout)")
 	fmt.Fprintln(writer, "  recurring list detected and manual recurring series (TOON on stdout)")
+	fmt.Fprintln(writer, "  bills     list recurring obligations and active card dues (TOON on stdout)")
 	fmt.Fprintln(writer, "  dashboard summarize net worth, cash, credit, this month, and sync health (TOON on stdout)")
 	fmt.Fprintln(writer, "  serve     serve authenticated JSON reads over loopback HTTP")
 }

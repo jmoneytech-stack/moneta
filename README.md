@@ -15,6 +15,7 @@ The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes th
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
 Phase 3 is complete; compute-on-read analytics now include `moneta networth --history Nd`, the `mom`, `merchants`, `utilization`, `savings`, and `fixed-variable` trend metrics, the credit-card-only `moneta cards` view, and the composed `moneta dashboard`, without materialized analytics tables.
+Phase 4 through PR7 adds recurring detection and persistence, `moneta recurring`, `moneta bills`, their authenticated REST mirrors, and honest dashboard upcoming-bill population.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -283,6 +284,26 @@ Status `partial` includes the conservative detected snapshot and projects active
 Drift is computed from integer cents with arbitrary-precision arithmetic and is flagged only when magnitude differs by more than 10 percent.
 Exit codes: 0 ok, 1 error, 2 usage.
 
+## Bills
+
+List detected obligations and active credit-card dues over an inclusive calendar horizon:
+
+```sh
+go run ./cmd/moneta bills
+go run ./cmd/moneta bills --days 60
+go run ./cmd/moneta bills --json
+```
+
+The default horizon is today through today plus 30 calendar days; `--days` accepts 1 through 366.
+Rows contain `date`, `name`, nullable non-negative `amount`, `source`, `kind`, `date_source`, and `due_status`.
+Detected subscriptions and bills appear only when detector status is `ok` or `partial`.
+Under `partial`, stale active schedules are projected forward at read time without mutating lifecycle evidence.
+Detector status `never_run` or `error` omits detected obligations, but active card dues remain available.
+Provider-reported full card dates are preferred; past dates project forward EOM-safely, and `due_day` is used only as an estimate when no full date exists.
+Due dates remain visible during their one-day weekly/biweekly or three-day monthly/quarterly/card grace period.
+The summary always includes the same four-field detector freshness object used by recurring, status, and dashboard.
+Exit codes: 0 ok, 1 error, 2 usage.
+
 ## Dashboard
 
 ```sh
@@ -329,9 +350,13 @@ recurring_detect:
   last_run_at: 2026-07-22T12:01:00.000Z
   last_success_at: 2026-07-22T12:01:00.000Z
   last_skipped_overflow: 0
-upcoming_bills: null
+upcoming_bills:
+  count: 2
+  bills[2]{date,name,amount,source,kind,date_source,due_status}:
+    2026-07-25,Streambox Example,18,recurring,subscription,detected_schedule,upcoming
+    2026-07-28,Travel Card,32,card_due,bill,provider_reported,upcoming
 anomalies: null
-phase4_note: upcoming_bills and anomalies are available in a later phase
+phase4_note: anomalies are available in a later phase
 hint: run moneta spend or moneta trends for the breakdown behind these totals
 ```
 
@@ -344,8 +369,10 @@ It is `null` when no card qualifies, so a missing limit never reads as 0%.
 `sync` reports Item counts only; per-Item detail stays in `moneta status`.
 `recurring_detect` reports the same four-field freshness object used by status, without the status-only error detail.
 
-`upcoming_bills` and `anomalies` are explicit `null` placeholders, never `0` and never an empty list, because their bills projection and anomaly engine have not landed yet.
-The `phase4_note` line states this inside the payload so an agent can tell "not implemented yet" from "none found".
+`upcoming_bills` is `null` when recurring detector status is `never_run` or `error`.
+For `ok` or `partial`, it contains the same 30-day `ReadBills` projection as `moneta bills`, capped to five rows while preserving the total count; no due rows render as an honest empty table with count zero.
+`anomalies` remains an explicit `null` placeholder because its engine has not landed.
+The narrowed `phase4_note` states that remaining limitation inside the payload.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 an Item needs reconnection.
 Exit 3 matches `moneta status`, and the full document still renders first so scripts can both detect the state and read the payload.
@@ -384,6 +411,7 @@ Read routes:
 | `GET /v1/debts` | none |
 | `GET /v1/cards` | none |
 | `GET /v1/recurring` | optional `kind=subscription\|bill\|income` |
+| `GET /v1/bills` | optional `days` from 1 to 366; default 30 |
 | `GET /v1/dashboard` | none |
 | `GET /v1/trends` | required `metric=mom\|merchants\|utilization\|savings\|fixed-variable`; `mom`: optional `period`; `merchants`: `period` or `from` + `to`, plus `limit`/`full`; `utilization`: `history`, `period`, or `from` + `to`; `savings` and `fixed-variable`: `period` or `from` + `to`; all: `account` |
 

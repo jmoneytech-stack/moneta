@@ -175,6 +175,7 @@ func TestAPIRequiresCorrectKeyOnEveryRoute(t *testing.T) {
 		"/v1/debts",
 		"/v1/cards",
 		"/v1/recurring",
+		"/v1/bills",
 		"/v1/dashboard",
 		"/v1/trends?metric=mom&period=2026-07",
 		"/v1/trends?metric=merchants&period=2026-07",
@@ -217,6 +218,7 @@ func TestAPIReadRoutes(t *testing.T) {
 		{"/v1/debts", []string{`"total_debt":3400`, `"name":"Credit Example"`, `"utilization":0.34`, `"apr":0.2299`}},
 		{"/v1/cards", []string{`"count":1`, `"total_debt":3400`, `"missing_balance":0`, `"name":"Credit Example"`, `"limit":10000`, `"utilization":0.34`, `"apr":0.2299`, `"due_day":15`}},
 		{"/v1/recurring", []string{`"detector":{"status":"never_run"`, `"recurring":[]`}},
+		{"/v1/bills", []string{`"detector":{"status":"never_run"`, `"count":1`, `"name":"Credit Example"`, `"source":"card_due"`}},
 		{"/v1/trends?metric=mom&period=2026-07", []string{`"metric":"mom"`, `"spend_this":25`, `"spend_prev":15`, `"delta":10`, `"category":"Food and Drink"`}},
 		{"/v1/trends?metric=merchants&period=2026-07", []string{`"metric":"merchants"`, `"spend":25`, `"count":2`, `"merchants":2`, `"merchant":"Grocery Mart"`, `"merchant":"Cafe Example"`}},
 		{"/v1/trends?metric=merchants&from=2026-07-01&to=2026-07-31", []string{`"metric":"merchants"`, `"from":"2026-07-01"`, `"to":"2026-07-31"`, `"spend":25`, `"count":2`}},
@@ -331,6 +333,64 @@ func TestAPIRecurringMirrorsCLI(t *testing.T) {
 	}
 }
 
+func TestAPIBillsMirrorsCLI(t *testing.T) {
+	db := openAPITestDB(t)
+	ctx := context.Background()
+	entityID, err := store.EnsureDefaultEntity(ctx, db)
+	if err != nil {
+		t.Fatalf("EnsureDefaultEntity() error: %v", err)
+	}
+	if err := store.UpsertDetectorState(ctx, db, store.DetectorState{
+		Status: "ok", LastRunAt: "2026-07-01T12:00:00.000Z",
+		LastSuccessAt: "2026-07-01T12:00:00.000Z",
+	}); err != nil {
+		t.Fatalf("seed detector state: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO recurring_items (
+			entity_id, name, kind, cadence, expected_cents, next_expected_date,
+			source, is_active, detect_key, amount_sign, schedule_anchor_day
+		) VALUES (?, 'API Bill Example', 'bill', 'monthly', -2400,
+			'2026-07-10', 'detected', 1, 'api bill example', -1, 10)
+	`, entityID); err != nil {
+		t.Fatalf("seed API bill: %v", err)
+	}
+	fixedNow := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	s := &server{
+		db: db, apiKeyHash: sha256.Sum256([]byte(testAPIKey)),
+		logger: log.New(io.Discard, "", 0), now: func() time.Time { return fixedNow },
+	}
+	handler := s.authenticate(s.recoverPanics(http.HandlerFunc(s.handleBills)))
+	response := performRequest(handler, "/v1/bills?days=30", testAPIKey)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/bills = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	storeReport, err := store.ReadBills(ctx, db, "2026-07-01", 30)
+	if err != nil {
+		t.Fatalf("ReadBills() expected document: %v", err)
+	}
+	var expected bytes.Buffer
+	if err := cli.Render(&expected, report.Bills(storeReport), cli.FormatJSON); err != nil {
+		t.Fatalf("render expected bills JSON: %v", err)
+	}
+	if response.Body.String() != expected.String() {
+		t.Errorf("API bills != shared CLI document:\nAPI: %s\nCLI: %s",
+			response.Body.String(), expected.String())
+	}
+	for _, path := range []string{
+		"/v1/bills?days=0", "/v1/bills?days=367", "/v1/bills?days=bad",
+		"/v1/bills?days=30&days=31", "/v1/bills?unknown=1",
+	} {
+		response := performRequest(handler, path, testAPIKey)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("GET %s = %d, want 400: %s", path, response.Code, response.Body.String())
+		}
+	}
+	if response := performRequest(handler, "/v1/bills", "wrong-key"); response.Code != http.StatusUnauthorized {
+		t.Errorf("unauthorized bills status = %d, want 401", response.Code)
+	}
+}
+
 func TestAPIDashboardComposesSectionsWithPlaceholders(t *testing.T) {
 	db := openAPITestDB(t)
 	seedAPITestDB(t, db)
@@ -358,7 +418,7 @@ func TestAPIDashboardComposesSectionsWithPlaceholders(t *testing.T) {
 		`"sync":{"items":1,"needs_attention":0,"login_required":0}`,
 		`"upcoming_bills":null`,
 		`"anomalies":null`,
-		`"phase4_note":"upcoming_bills and anomalies are available in a later phase"`,
+		`"phase4_note":"anomalies are available in a later phase"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard response missing %q: %s", want, body)
@@ -649,6 +709,7 @@ func TestAPIReturnsJSONForUnknownPathsAndMethods(t *testing.T) {
 		{http.MethodGet, "/v1/unknown", http.StatusNotFound, "{\"error\":\"not found\"}\n", ""},
 		{http.MethodPost, "/v1/status", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
 		{http.MethodPost, "/v1/recurring", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
+		{http.MethodPost, "/v1/bills", http.StatusMethodNotAllowed, "{\"error\":\"method not allowed\"}\n", "GET, HEAD"},
 	}
 	for _, test := range tests {
 		request := httptest.NewRequest(test.method, test.path, nil)
@@ -689,6 +750,8 @@ func TestAPIRejectsInvalidQueries(t *testing.T) {
 		{"/v1/cards?unexpected=value", "unknown query parameter"},
 		{"/v1/recurring?kind=other", "kind must be"},
 		{"/v1/recurring?unexpected=value", "unknown query parameter"},
+		{"/v1/bills?days=0", "integer from 1 to 366"},
+		{"/v1/bills?unexpected=value", "unknown query parameter"},
 		{"/v1/dashboard?unexpected=value", "unknown query parameter"},
 		{"/v1/trends", "metric"},
 		{"/v1/trends?metric=cards", "unknown metric"},

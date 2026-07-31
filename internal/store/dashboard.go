@@ -11,8 +11,9 @@ import (
 // DashboardFilter selects the inclusive transaction period the spend and
 // cashflow sections cover. Balance sections are always as-of latest.
 type DashboardFilter struct {
-	From string
-	To   string
+	From      string
+	To        string
+	BillsAsOf string
 }
 
 // DashboardSync is the compact sync-health block. NeedsAttention counts every
@@ -28,9 +29,8 @@ type DashboardSync struct {
 // adds no aggregation of its own beyond selecting depository cash from the
 // net-worth by-type totals and the credit-card portfolio utilization inputs.
 //
-// Upcoming bills and anomaly counts are deliberately absent: they are Phase 4
-// inputs, and the render layer emits explicit null placeholders rather than
-// fabricating values.
+// UpcomingBills is nil under never_run/error and non-nil under ok/partial.
+// Anomalies remain absent until their Phase 4 read lands.
 type DashboardReport struct {
 	AsOf string // latest balance date across accounts, "" when none exists
 	From string
@@ -58,6 +58,7 @@ type DashboardReport struct {
 	Cashflow        CashflowSummary
 	Sync            DashboardSync
 	RecurringDetect DetectorState
+	UpcomingBills   *BillsReport
 }
 
 // isDepositoryAccountType reports whether a canonical type counts as spendable
@@ -71,8 +72,8 @@ func isDepositoryAccountType(accountType string) bool {
 	}
 }
 
-// ReadDashboard composes ReadNetworth, ReadCards, ReadSpend, ReadCashflow, and
-// ListProviderItemStatuses. Each underlying read owns its own consistency
+// ReadDashboard composes ReadNetworth, ReadCards, ReadSpend, ReadCashflow,
+// ReadBills, and ListProviderItemStatuses. Each underlying read owns its own consistency
 // boundary, so the sections are individually consistent rather than one global
 // snapshot; at personal-finance scale against a local file that is sufficient
 // and avoids duplicating their SQL.
@@ -147,10 +148,13 @@ func ReadDashboard(
 			report.Sync.LoginRequired++
 		}
 	}
-	detector, err := ReadDetectorState(ctx, db)
+	bills, err := ReadBills(ctx, db, filter.BillsAsOf, 30)
 	if err != nil {
-		return report, fmt.Errorf("read dashboard recurring detector: %w", err)
+		return report, fmt.Errorf("read dashboard upcoming bills: %w", err)
 	}
-	report.RecurringDetect = detector
+	report.RecurringDetect = bills.Detector
+	if bills.Detector.Status == "ok" || bills.Detector.Status == "partial" {
+		report.UpcomingBills = &bills
+	}
 	return report, nil
 }

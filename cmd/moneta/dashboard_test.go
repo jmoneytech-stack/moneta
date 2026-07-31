@@ -87,9 +87,9 @@ func seedDashboardCommandDB(t *testing.T, itemStatus string) string {
 }
 
 // TestDashboardComposesSections is the PR10 acceptance test from
-// docs/phase3-analytics-plan.md: every section is populated from its
-// underlying store read, and the two Phase 4 slots render as explicit null
-// placeholders rather than fabricated counts.
+// docs/phase3-analytics-plan.md: every foundational section is populated from
+// its underlying store read. The detector gate keeps upcoming bills null before
+// a successful detect, and anomalies remain an explicit null placeholder.
 func TestDashboardComposesSections(t *testing.T) {
 	t.Setenv(databasePathEnvironment, seedDashboardCommandDB(t, "ok"))
 	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.FixedZone("local", -7*60*60))
@@ -125,10 +125,10 @@ func TestDashboardComposesSections(t *testing.T) {
 		"items: 1",
 		"needs_attention: 0",
 		"login_required: 0",
-		// Phase 4 placeholders, never fabricated
+		// Detector-gated bills and the remaining anomaly placeholder.
 		"upcoming_bills: null",
 		"anomalies: null",
-		"phase4_note: upcoming_bills and anomalies are available in a later phase",
+		"phase4_note: anomalies are available in a later phase",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dashboard output missing %q:\n%s", want, out)

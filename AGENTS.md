@@ -14,10 +14,12 @@ The post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complet
 Phase 2 is complete.
 Phase 3 is complete: the D3-1 liability-sign and D3-2 nullable-money foundation, PR3's compute-on-read `networth --history`, PR4-PR8's `mom`, `merchants`, `utilization`, `savings`, and heuristic-v1 `fixed-variable` trend metrics, PR9's credit-card-only `moneta cards`, and PR10's composed `moneta dashboard`; all reads have authenticated REST mirrors.
 Loans stay in `moneta debts`; `moneta cards` is `credit_card` only.
-The dashboard is the explicit `moneta dashboard` subcommand (R3(b)/B1) - bare `moneta` still prints usage and exits 2 - and its `upcoming_bills` and `anomalies` slots are deliberate `null` placeholders for Phase 4 (R5/C1); never fabricate values for them.
+The dashboard is the explicit `moneta dashboard` subcommand (R3(b)/B1) - bare `moneta` still prints usage and exits 2.
+Its `upcoming_bills` slot follows the detector gate: `null` for `never_run`/`error`, and an honest empty or populated projection for `ok`/`partial`.
+Its `anomalies` slot remains a deliberate `null` placeholder; never fabricate a value for it.
 A follow-up polish pass moved the dashboard document into `internal/report` so the CLI and REST payloads are one definition and cannot drift.
-Phase 4 PR1-PR6 are complete: enriched merchant/card due-date ingestion, safe history replay, detector schema/state, the pure recurring detector, post-sync complete/partial persistence, transaction back-links, and the `moneta recurring` / `/v1/recurring` read with detector freshness on status and dashboard surfaces.
-Bills, anomalies, and dashboard slot population have not started.
+Phase 4 PR1-PR7 are complete: enriched merchant/card due-date ingestion, safe history replay, detector schema/state, the pure recurring detector, post-sync complete/partial persistence, transaction back-links, the `moneta recurring` / `/v1/recurring` read, and the `moneta bills` / `/v1/bills` read with dashboard `upcoming_bills` population.
+The anomaly engine and dashboard anomaly population have not started.
 Do not begin those remaining Phase 4 features, the A2 `expense_class` taxonomy, or any later feature until explicitly requested by the maintainer.
 
 ## Working Rules
