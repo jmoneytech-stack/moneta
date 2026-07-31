@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -68,6 +69,35 @@ func TestDashboardDocumentShape(t *testing.T) {
 
 // The Phase 4 slots must never render as a value an agent could read as real
 // data. Zero and an empty list are both indistinguishable from "none found".
+func TestReportDashboardIncludesRecurringDetectKey(t *testing.T) {
+	dashboard := populatedDashboard()
+	dashboard.RecurringDetect = store.DetectorState{
+		Status:              "partial",
+		LastRunAt:           "2026-08-15T12:00:00.000Z",
+		LastSuccessAt:       "2026-08-01T12:00:00.000Z",
+		LastError:           "must not appear on dashboard",
+		LastSkippedOverflow: 2,
+	}
+	out := renderJSON(t, dashboard)
+	var document map[string]any
+	if err := json.Unmarshal([]byte(out), &document); err != nil {
+		t.Fatalf("decode dashboard JSON: %v", err)
+	}
+	detector, ok := document["recurring_detect"].(map[string]any)
+	if !ok {
+		t.Fatalf("recurring_detect = %#v, want object", document["recurring_detect"])
+	}
+	if len(detector) != 4 || detector["status"] != "partial" ||
+		detector["last_run_at"] != "2026-08-15T12:00:00.000Z" ||
+		detector["last_success_at"] != "2026-08-01T12:00:00.000Z" ||
+		detector["last_skipped_overflow"] != float64(2) {
+		t.Errorf("recurring_detect = %#v, want exact four-field detector object", detector)
+	}
+	if _, exists := detector["last_error"]; exists {
+		t.Errorf("dashboard recurring_detect leaked last_error: %#v", detector)
+	}
+}
+
 func TestDashboardPhase4SlotsAreAlwaysNull(t *testing.T) {
 	for name, dashboard := range map[string]store.DashboardReport{
 		"populated": populatedDashboard(),

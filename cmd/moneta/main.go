@@ -16,6 +16,7 @@ import (
 	"github.com/jmoneytech-stack/moneta/internal/canon"
 	"github.com/jmoneytech-stack/moneta/internal/core"
 	"github.com/jmoneytech-stack/moneta/internal/providers/plaid"
+	"github.com/jmoneytech-stack/moneta/internal/recurring"
 	"github.com/jmoneytech-stack/moneta/internal/secret"
 	"github.com/jmoneytech-stack/moneta/internal/store"
 )
@@ -215,38 +216,45 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = database.Close() }()
 
-	var items []store.ProviderItem
+	allItems, err := store.ListProviderItems(ctx, database, plaidProviderName)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	items := allItems
 	if *itemID != "" {
-		item, err := store.GetProviderItem(ctx, database, plaidProviderName, *itemID)
-		if errors.Is(err, sql.ErrNoRows) {
+		items = nil
+		for _, item := range allItems {
+			if item.ItemID == *itemID {
+				items = []store.ProviderItem{item}
+				break
+			}
+		}
+		if len(items) == 0 {
 			fmt.Fprintf(stderr, "error: provider item %q is not linked\n", *itemID)
-			return 1
-		}
-		if err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return 1
-		}
-		items = []store.ProviderItem{item}
-	} else {
-		items, err = store.ListProviderItems(ctx, database, plaidProviderName)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
 	}
 
-	if err := syncItemsWithReset(ctx, database, cipher, items, func(
+	if err := syncItemsWithDetection(ctx, database, cipher, allItems, items, func(
 		item store.ProviderItem,
 		accessToken string,
 	) (canon.Provider, error) {
 		return plaid.New(config, item.ItemID, item.Institution, accessToken)
-	}, *resetCursor, stdout, stderr); err != nil {
+	}, *resetCursor, syncDetectionDependencies{}, stdout, stderr); err != nil {
 		if !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 		}
 		return 1
 	}
 	return 0
+}
+
+// syncDetectionDependencies is the post-loop test seam. Production leaves it
+// empty to use the wall clock and pure recurring detector.
+type syncDetectionDependencies struct {
+	now    func() time.Time
+	detect func([]recurring.Candidate, string) (recurring.Result, error)
 }
 
 // syncItems runs the library sync path for each item and prints a per-item
@@ -260,8 +268,9 @@ func syncItems(
 	buildProvider func(item store.ProviderItem, accessToken string) (canon.Provider, error),
 	stdout, stderr io.Writer,
 ) error {
-	return syncItemsWithReset(
-		ctx, db, cipher, items, buildProvider, false, stdout, stderr,
+	return syncItemsWithDetection(
+		ctx, db, cipher, items, items, buildProvider, false,
+		syncDetectionDependencies{}, stdout, stderr,
 	)
 }
 
@@ -274,13 +283,36 @@ func syncItemsWithReset(
 	resetCursor bool,
 	stdout, stderr io.Writer,
 ) error {
+	return syncItemsWithDetection(
+		ctx, db, cipher, items, items, buildProvider, resetCursor,
+		syncDetectionDependencies{}, stdout, stderr,
+	)
+}
+
+func syncItemsWithDetection(
+	ctx context.Context,
+	db *sql.DB,
+	cipher *secret.Cipher,
+	allItems []store.ProviderItem,
+	items []store.ProviderItem,
+	buildProvider func(item store.ProviderItem, accessToken string) (canon.Provider, error),
+	resetCursor bool,
+	dependencies syncDetectionDependencies,
+	stdout, stderr io.Writer,
+) error {
 	if len(items) == 0 {
 		fmt.Fprintln(stdout, "No linked provider items. Run 'moneta link' to connect an institution.")
+		if db != nil {
+			runPostLoopDetection(
+				ctx, db, allItems, items, nil, dependencies, stdout, stderr,
+			)
+		}
 		return nil
 	}
 
 	synced := 0
 	skipped := 0
+	successfulProviderItemIDs := make(map[int64]struct{}, len(items))
 	for _, item := range items {
 		pullCursor := item.SyncCursor
 		if resetCursor {
@@ -336,6 +368,7 @@ func syncItemsWithReset(
 			continue
 		}
 		synced++
+		successfulProviderItemIDs[item.DatabaseID] = struct{}{}
 		skipped += len(result.Skipped)
 		if len(result.Skipped) > 0 {
 			fmt.Fprintf(
@@ -354,10 +387,113 @@ func syncItemsWithReset(
 		fmt.Fprintf(stdout, ", %s skipped", recordPhrase(skipped))
 	}
 	fmt.Fprintln(stdout, ".")
+	runPostLoopDetection(
+		ctx,
+		db,
+		allItems,
+		items,
+		successfulProviderItemIDs,
+		dependencies,
+		stdout,
+		stderr,
+	)
 	if synced != len(items) {
 		return fmt.Errorf("%d of %d items failed to sync", len(items)-synced, len(items))
 	}
 	return nil
+}
+
+func runPostLoopDetection(
+	ctx context.Context,
+	db *sql.DB,
+	allItems []store.ProviderItem,
+	items []store.ProviderItem,
+	successfulProviderItemIDs map[int64]struct{},
+	dependencies syncDetectionDependencies,
+	stdout, stderr io.Writer,
+) {
+	now := time.Now
+	if dependencies.now != nil {
+		now = dependencies.now
+	}
+	detect := recurring.Detect
+	if dependencies.detect != nil {
+		detect = dependencies.detect
+	}
+	currentTime := now()
+	runAt := currentTime.UTC().Format("2006-01-02T15:04:05.000Z")
+	if len(successfulProviderItemIDs) == 0 {
+		if err := store.RecordDetectorAttempt(ctx, db, "partial", runAt, ""); err != nil {
+			fmt.Fprintf(stderr, "error: record skipped recurring detection: %v\n", err)
+		}
+		fmt.Fprintln(stdout, "recurring: skipped (no item synced; see moneta status)")
+		return
+	}
+
+	candidates, err := store.LoadRecurringCandidates(ctx, db, currentTime.Format(time.DateOnly))
+	if err != nil {
+		recordDetectionFailure(ctx, db, runAt, stdout, stderr)
+		return
+	}
+	result, err := detect(candidates, currentTime.Format(time.DateOnly))
+	if err != nil {
+		recordDetectionFailure(ctx, db, runAt, stdout, stderr)
+		return
+	}
+	completeRun := len(allItems) > 0 &&
+		sameProviderItemSet(items, allItems) &&
+		len(successfulProviderItemIDs) == len(items)
+	if err := store.PersistRecurringDetection(ctx, db, store.RecurringDetectionInput{
+		Result:                    result,
+		Candidates:                candidates,
+		SuccessfulProviderItemIDs: successfulProviderItemIDs,
+		Complete:                  completeRun,
+		RunAt:                     runAt,
+	}); err != nil {
+		recordDetectionFailure(ctx, db, runAt, stdout, stderr)
+		return
+	}
+	line := "recurring: partial (positive evidence only)"
+	if completeRun {
+		line = fmt.Sprintf("recurring: %d series", len(result.Series))
+	}
+	if result.SkippedOverflow > 0 {
+		line += fmt.Sprintf(", %d overflow skipped", result.SkippedOverflow)
+	}
+	fmt.Fprintln(stdout, line)
+}
+
+func recordDetectionFailure(
+	ctx context.Context,
+	db *sql.DB,
+	runAt string,
+	stdout, stderr io.Writer,
+) {
+	if err := store.RecordDetectorAttempt(
+		ctx, db, "error", runAt, "recurring detection failed",
+	); err != nil {
+		fmt.Fprintf(stderr, "error: record recurring detection failure: %v\n", err)
+	}
+	fmt.Fprintln(stdout, "recurring: detection failed")
+}
+
+func sameProviderItemSet(left, right []store.ProviderItem) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	ids := make(map[int64]struct{}, len(left))
+	for _, item := range left {
+		ids[item.DatabaseID] = struct{}{}
+	}
+	if len(ids) != len(left) {
+		return false
+	}
+	for _, item := range right {
+		if _, found := ids[item.DatabaseID]; !found {
+			return false
+		}
+	}
+	return true
 }
 
 func recordPhrase(count int) string {

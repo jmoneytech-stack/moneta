@@ -19,6 +19,14 @@ type DetectorState struct {
 	LastSkippedOverflow int
 }
 
+type detectorStateQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type detectorStateExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 // ReadDetectorState returns the seeded singleton detector state. A missing row
 // is treated as never_run as defense in depth for a damaged or manually edited
 // database.
@@ -26,9 +34,12 @@ func ReadDetectorState(ctx context.Context, db *sql.DB) (DetectorState, error) {
 	if db == nil {
 		return DetectorState{}, fmt.Errorf("database is required")
 	}
+	return readDetectorState(ctx, db)
+}
 
+func readDetectorState(ctx context.Context, queryer detectorStateQueryer) (DetectorState, error) {
 	var state DetectorState
-	err := db.QueryRowContext(ctx, `
+	err := queryer.QueryRowContext(ctx, `
 		SELECT
 			status,
 			COALESCE(last_run_at, ''),
@@ -61,19 +72,18 @@ func UpsertDetectorState(ctx context.Context, db *sql.DB, state DetectorState) e
 	if db == nil {
 		return fmt.Errorf("database is required")
 	}
-	switch state.Status {
-	case "never_run", "ok", "error", "partial":
-	default:
-		return fmt.Errorf("unsupported detector status %q", state.Status)
-	}
-	if state.LastSeriesCount < 0 {
-		return fmt.Errorf("detector series count must not be negative")
-	}
-	if state.LastSkippedOverflow < 0 {
-		return fmt.Errorf("detector skipped overflow count must not be negative")
-	}
+	return upsertDetectorState(ctx, db, state)
+}
 
-	_, err := db.ExecContext(ctx, `
+func upsertDetectorState(
+	ctx context.Context,
+	execer detectorStateExecer,
+	state DetectorState,
+) error {
+	if err := validateDetectorState(state); err != nil {
+		return err
+	}
+	_, err := execer.ExecContext(ctx, `
 		INSERT INTO detector_state (
 			id,
 			status,
@@ -100,6 +110,58 @@ func UpsertDetectorState(ctx context.Context, db *sql.DB, state DetectorState) e
 	)
 	if err != nil {
 		return fmt.Errorf("upsert detector state: %w", err)
+	}
+	return nil
+}
+
+func validateDetectorState(state DetectorState) error {
+	switch state.Status {
+	case "never_run", "ok", "error", "partial":
+	default:
+		return fmt.Errorf("unsupported detector status %q", state.Status)
+	}
+	if state.LastSeriesCount < 0 {
+		return fmt.Errorf("detector series count must not be negative")
+	}
+	if state.LastSkippedOverflow < 0 {
+		return fmt.Errorf("detector skipped overflow count must not be negative")
+	}
+	return nil
+}
+
+// RecordDetectorAttempt updates only the latest coordination outcome. It
+// preserves the last complete success and prior successful series/overflow
+// counts, as required for skipped and failed detect attempts.
+func RecordDetectorAttempt(
+	ctx context.Context,
+	db *sql.DB,
+	status string,
+	runAt string,
+	lastError string,
+) error {
+	if db == nil {
+		return fmt.Errorf("database is required")
+	}
+	if status != "partial" && status != "error" {
+		return fmt.Errorf("detector attempt status must be partial or error")
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin detector attempt update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	state, err := readDetectorState(ctx, tx)
+	if err != nil {
+		return err
+	}
+	state.Status = status
+	state.LastRunAt = runAt
+	state.LastError = lastError
+	if err := upsertDetectorState(ctx, tx, state); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit detector attempt update: %w", err)
 	}
 	return nil
 }

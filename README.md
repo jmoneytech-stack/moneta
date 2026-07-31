@@ -77,11 +77,15 @@ go run ./cmd/moneta sync --reset-cursor
 
 `moneta sync` pulls incremental transactions, balances, and liabilities for every linked Plaid item, or one item with `--item <item-id>`.
 After upgrading from a pre-Phase-4 database, run one unscoped `moneta sync --reset-cursor` to re-pull available transaction history for every linked item so historical rows gain `merchant_display`.
-Plaid links request 730 days of transaction history, covering the planned 14-month recurring-detection lookback with margin.
+Plaid links request 730 days of transaction history, covering the detector's 14-month recurring lookback with margin.
 Reset mode sends an empty pull cursor to Plaid but retains the stored database cursor as the ingest CAS expectation; the checkpoint advances only after the complete replay commits, and remains unchanged on pull or ingest failure.
 If Plaid reports a pagination mutation during reset, replay restarts from the original empty pull cursor and may fetch the full available history again; the stored checkpoint remains intact.
-If recovery requires scoped `--item <item-id> --reset-cursor` runs with multiple linked items, finish with a plain unscoped `moneta sync`; scoped runs remain partial for the later Phase 4 detector.
-Each item prints a one-line summary, including the count of single-row poison records skipped so the sync could still advance.
+If recovery requires scoped `--item <item-id> --reset-cursor` runs with multiple linked items, finish with a plain unscoped `moneta sync`; a scoped success produces conservative `partial` detector state while multiple items are linked.
+After the item loop, sync runs recurring detection once against the local 14-month snapshot.
+A complete all-linked success persists full lifecycle evidence and reports detector status `ok`; incomplete runs persist only positive evidence and report `partial`.
+If every selected item fails, existing recurring rows are preserved and detection is skipped.
+A detector failure rolls back detector writes, records redacted status `error`, and does not discard successful item ingestion.
+Each item prints a one-line summary, followed by a prose recurring-detection result and the count of any single-row or overflow records skipped.
 Batches and cursors commit atomically, so re-running after a failure is safe.
 
 ## Status
@@ -92,7 +96,8 @@ After linking and syncing, inspect connection health with the same environment (
 go run ./cmd/moneta status
 ```
 
-`moneta status` reads only the local database and prints TOON on stdout: a summary block (item, account, and needs-attention counts), one row per linked item with institution, stored health, account and transaction counts, and last-sync time, then a next-step hint.
+`moneta status` reads only the local database and prints TOON on stdout: a summary block (item, account, and needs-attention counts), the recurring `detector` freshness object, one row per linked item with institution, stored health, account and transaction counts, and last-sync time, then a next-step hint.
+The detector object contains `status`, nullable `last_run_at` and `last_success_at`, and `last_skipped_overflow`; status output also includes redacted `last_error` after detector failure.
 With nothing linked it says so and points at `moneta link`.
 Flags: `--json` emits compact JSON instead of TOON, and `--limit` / `--full` control row truncation (default 20).
 Exit codes follow the AXI convention: 0 ok, 1 error, 2 usage, and 3 when an item reports `login_required` and needs reconnection.
@@ -301,6 +306,11 @@ sync:
   items: 1
   needs_attention: 0
   login_required: 0
+recurring_detect:
+  status: ok
+  last_run_at: 2026-07-22T12:01:00.000Z
+  last_success_at: 2026-07-22T12:01:00.000Z
+  last_skipped_overflow: 0
 upcoming_bills: null
 anomalies: null
 phase4_note: upcoming_bills and anomalies are available in a later phase
@@ -314,8 +324,9 @@ hint: run moneta spend or moneta trends for the breakdown behind these totals
 It is `null` when no card qualifies, so a missing limit never reads as 0%.
 `spend_month` and `cashflow_month` cover the current calendar month in the host's local timezone and reuse the same posted, non-excluded rules as `moneta spend` and `moneta cashflow`.
 `sync` reports Item counts only; per-Item detail stays in `moneta status`.
+`recurring_detect` reports the same four-field freshness object used by status, without the status-only error detail.
 
-`upcoming_bills` and `anomalies` are explicit `null` placeholders, never `0` and never an empty list, because recurring detection and anomaly baselines are Phase 4 work.
+`upcoming_bills` and `anomalies` are explicit `null` placeholders, never `0` and never an empty list, because their bills projection and anomaly engine have not landed yet.
 The `phase4_note` line states this inside the payload so an agent can tell "not implemented yet" from "none found".
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 an Item needs reconnection.
