@@ -22,9 +22,10 @@ The post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complet
 Phase 2 is complete, including GitHub Actions build, vet, test, CGO-free test, and race-test gates.
 Phase 3's liability-sign and nullable-money foundation is complete, and compute-on-read daily net-worth history, month-over-month category spend, top-merchant spend, daily credit-utilization, savings-rate, and heuristic fixed-variable trends ship through CLI TOON/JSON and authenticated REST.
 PR9 adds `moneta cards`, the credit-card-only projection of the debts data (balance, limit, utilization, APR, due day); loans stay in `moneta debts`.
-PR10 adds `moneta dashboard`, the composed content-first summary (net worth, cash, credit, this month's spend and cashflow, sync health) with explicit `null` placeholders for the Phase 4 upcoming-bills and anomaly slots.
+PR10 adds `moneta dashboard`, the composed content-first summary (net worth, cash, credit, this month's spend and cashflow, sync health), initially with explicit `null` placeholders for upcoming bills and anomalies.
 Phase 3 is complete, followed by a polish pass that gave the dashboard document a single definition in `internal/report` shared by the CLI and REST.
-Phase 4 (recurring detection, anomaly engine), the A2 `expense_class` taxonomy, and later features start only when explicitly prioritized.
+Phase 4 is complete: recurring detection and lifecycle persistence, recurring/bills/anomaly CLI and authenticated REST reads, detector-aware dashboard bills, and the previous-complete-month dashboard anomaly projection all ship.
+The A2 `expense_class` taxonomy and later features start only when explicitly prioritized.
 
 ## Non-Goals
 
@@ -47,5 +48,5 @@ Phase 4 (recurring detection, anomaly engine), the A2 `expense_class` taxonomy, 
 1. Phase 1 - schema + provider interface + Plaid provider, verified against Sandbox.
 2. Phase 2 - AXI CLI + REST API, verified by an agent running real command flows.
 3. Phase 3 - compute-on-read analytics views.
-4. Phase 4 - recurring detection + anomaly detection.
+4. Phase 4 - recurring detection + anomaly detection. Complete.
 5. Post-v1 - optional human web UI on top of the REST API, for viewing and reviewing finances without an agent.

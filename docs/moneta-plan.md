@@ -1,6 +1,6 @@
 # Moneta - Architecture Plan
 
-Status: approved design. Phase 1 implementation and post-review hardening are complete. Phase 2 is complete: the poison skip, production `moneta sync`, the `moneta status` / `accounts` / `tx` / `spend` / `cashflow` / `networth` / `debts` reads, the authenticated loopback read-only REST mirror, and GitHub Actions CI are in place, and the post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete. Phase 3 is complete: the correctness foundation, compute-on-read net-worth history, month-over-month category spend, top-merchant spend, daily credit-utilization, savings-rate, and heuristic fixed-variable trends, the credit-card-only `moneta cards` view, and the composed `moneta dashboard`. Phase 4 and later analytics begin only when explicitly prioritized.
+Status: approved design. Phase 1 implementation and post-review hardening are complete. Phase 2 is complete: the poison skip, production `moneta sync`, the `moneta status` / `accounts` / `tx` / `spend` / `cashflow` / `networth` / `debts` reads, the authenticated loopback read-only REST mirror, and GitHub Actions CI are in place, and the post-review hardening stack (`docs/phase2-review-fix-pr-plan.md`) is complete. Phase 3 is complete: the correctness foundation, compute-on-read net-worth history, month-over-month category spend, top-merchant spend, daily credit-utilization, savings-rate, and heuristic fixed-variable trends, the credit-card-only `moneta cards` view, and the composed `moneta dashboard`. Phase 4 is complete: recurring detection and lifecycle persistence, recurring/bills/anomaly CLI and REST reads, and honest dashboard bills and anomaly projections all ship. Later work begins only when explicitly prioritized.
 Moneta is a self-hosted personal + business finance data hub whose primary consumer is an AI agent, not a human UI.
 It ingests financial data from pluggable providers, normalizes it into a canonical model in SQLite, and exposes it through a token-efficient AXI CLI (TOON output) and a small REST API.
 
@@ -212,7 +212,7 @@ Conventions on every command: TOON on stdout; one record per line (grep/head fri
 
 | Command | Purpose |
 |---|---|
-| `moneta dashboard` | Content-first dashboard: net worth, cash, utilization, this month's spend and cashflow, sync health; upcoming bills and anomaly count are `null` Phase 4 placeholders. Bare `moneta` stays usage + exit 2 (R3(b)/B1) |
+| `moneta dashboard` | Content-first dashboard: net worth, cash, utilization, this month's spend and cashflow, sync health, detector-aware upcoming bills, and previous-complete-month anomalies. Bare `moneta` stays usage + exit 2 (R3(b)/B1) |
 | `moneta networth [--entity] [--as-of] [--history 90d]` | Current + compute-on-read daily net worth history |
 | `moneta accounts [--entity] [--type]` | name, type, balance, status (4-field default schema) |
 | `moneta tx [--from --to --cat --merchant --account --entity --min --max --search --limit]` | Transactions with aggregate header |
@@ -251,7 +251,7 @@ A `SKILL.md` ships with the repo so agents can learn the command surface without
 
 ## Analytics (computed on read, not derived by the agent)
 
-Month-over-month category trends, top merchants, average daily spend, fixed vs variable expense split, savings rate, subscription total, and credit utilization trend are computed on read at personal-finance scale.
+Month-over-month category trends, top merchants, average daily spend, fixed vs variable expense split, savings rate, subscription total, credit utilization trend, and category-level anomalies are computed on read at personal-finance scale.
 Sync already writes immutable per-account daily `balance_snapshots`; Phase 3 net-worth history carries those balances forward on read without introducing a materialized analytics table.
 A materialized daily net-worth table remains a future option only if measurement or frozen-history requirements justify it.
 
@@ -303,7 +303,7 @@ Containerized deployment is supported via the optional Dockerfile for server/NAS
 1. Core schema + provider interface + Plaid provider (Link flow, transactions sync, liabilities), tested against Sandbox.
 2. AXI CLI + REST API.
 3. Analytics views.
-4. Recurring detection + anomaly detection.
+4. Recurring detection + anomaly detection. Complete.
 
 Each phase delivers runnable code and README updates (setup, building or downloading the binary, getting Plaid Sandbox keys, connecting an institution, running a sync, testing the CLI commands).
 

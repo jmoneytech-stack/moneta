@@ -1,7 +1,7 @@
 # Phase 4 Recurring + Anomalies PR Plan
 
 Executable hand-off for Phase 4 (build phase 4, "Recurring detection + anomaly detection", per `docs/moneta-plan.md` build phase 4).
-Do **not** implement until the maintainer explicitly starts a PR.
+**Status:** complete through PR9; the full graph below is implemented and both dashboard slots have definitive semantics.
 Phase 3 is frozen; do not modify Phase 3 analytics behavior except the dashboard slots this phase fills, the merchant/card-date schema and Plaid boundary fixes, and the detector schema below.
 No new dependencies.
 Keep CGO-free.
@@ -13,8 +13,8 @@ Do **not** commit or push unless the maintainer explicitly asks.
 **Constraint docs:** `AGENTS.md`, `docs/moneta-plan.md` (binding: int64 cents, analytics exclusion via `excluded`, TOON/AXI output conventions, REST mirrors reads), `docs/phase3-analytics-plan.md` (structure model, D3-3 compute-on-read precedent).
 
 > **Read this first.**
-> Phase 4 fills the two dashboard placeholders (`upcoming_bills`, `anomalies`) that Phase 3 deliberately left `null` (R5/C1 in `AGENTS.md`).
-> Until a slot's PR lands, the placeholder stays `null` with `phase4_note`; never fabricate values.
+> Phase 4 filled the two dashboard placeholders (`upcoming_bills`, `anomalies`) that Phase 3 deliberately left `null` (R5/C1 in `AGENTS.md`).
+> `upcoming_bills` now follows the detector gate, `anomalies` is always a real object, and `phase4_note` has been removed.
 > This stack is **not** zero-DDL: migrations cover detector identity, lifecycle state, detector run status, optional enriched merchant storage, and full card next-payment dates.
 > Detection quality on real Plaid data requires both a cleaner merchant field **and** a one-time history re-pull path; PR1 alone on an existing 14-month DB is not sufficient.
 > Detection runs **once per `moneta sync`**, after all provider items finish, not inside each item sync.
@@ -41,7 +41,9 @@ Do **not** commit or push unless the maintainer explicitly asks.
 
 ---
 
-## Current state anchors
+## Starting state anchors (historical)
+
+These anchors describe the pre-Phase-4 baseline used to design the now-complete stack.
 
 - `recurring_items` exists (`internal/store/migrations/000001_initial_schema.up.sql`): `entity_id`, `name`, `kind` (`subscription|bill|income`), `cadence` (free-form TEXT), `expected_cents` (INTEGER NOT NULL), `next_expected_date` (nullable YYYY-MM-DD), `drift_pct` (REAL, default 0), `source` (`detected|manual`), `is_active`.
 - Index today: `recurring_items(entity_id, kind, is_active)` only.
@@ -614,6 +616,8 @@ PR1 Plaid merchant_display + full card due date (DDL + normalize)
                                 └─► PR7 moneta bills + /v1/bills + dashboard upcoming_bills
 PR8 anomaly engine + moneta anomalies + /v1/anomalies ─► PR9 dashboard anomalies + final notes
 ```
+
+All PR1-PR9 nodes are complete.
 
 - PR8-PR9 independent of PR1-PR7 for pure anomalies, but may start after PR1 if desired.
 - Each new read includes REST in the same PR.

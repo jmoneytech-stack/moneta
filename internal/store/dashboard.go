@@ -8,8 +8,9 @@ import (
 	"github.com/jmoneytech-stack/moneta/internal/canon"
 )
 
-// DashboardFilter selects the inclusive transaction period the spend and
-// cashflow sections cover. Balance sections are always as-of latest.
+// DashboardFilter selects the inclusive transaction period for spend and
+// cashflow. BillsAsOf is the local calendar date for bills and anomalies.
+// Balance sections are always as-of latest.
 type DashboardFilter struct {
 	From      string
 	To        string
@@ -30,7 +31,7 @@ type DashboardSync struct {
 // net-worth by-type totals and the credit-card portfolio utilization inputs.
 //
 // UpcomingBills is nil under never_run/error and non-nil under ok/partial.
-// Anomalies remain absent until their Phase 4 read lands.
+// Anomalies always contains the default previous-complete-month read.
 type DashboardReport struct {
 	AsOf string // latest balance date across accounts, "" when none exists
 	From string
@@ -59,6 +60,7 @@ type DashboardReport struct {
 	Sync            DashboardSync
 	RecurringDetect DetectorState
 	UpcomingBills   *BillsReport
+	Anomalies       AnomalyReport
 }
 
 // isDepositoryAccountType reports whether a canonical type counts as spendable
@@ -73,10 +75,10 @@ func isDepositoryAccountType(accountType string) bool {
 }
 
 // ReadDashboard composes ReadNetworth, ReadCards, ReadSpend, ReadCashflow,
-// ReadBills, and ListProviderItemStatuses. Each underlying read owns its own consistency
-// boundary, so the sections are individually consistent rather than one global
-// snapshot; at personal-finance scale against a local file that is sufficient
-// and avoids duplicating their SQL.
+// ReadBills, ReadAnomalies, and ListProviderItemStatuses. Each underlying read
+// owns its own consistency boundary, so sections are individually consistent
+// rather than one global snapshot. At personal-finance scale against a local
+// file that is sufficient and avoids duplicating their SQL.
 func ReadDashboard(
 	ctx context.Context,
 	db *sql.DB,
@@ -156,5 +158,10 @@ func ReadDashboard(
 	if bills.Detector.Status == "ok" || bills.Detector.Status == "partial" {
 		report.UpcomingBills = &bills
 	}
+	anomalies, err := ReadAnomalies(ctx, db, filter.BillsAsOf, "")
+	if err != nil {
+		return report, fmt.Errorf("read dashboard anomalies: %w", err)
+	}
+	report.Anomalies = anomalies
 	return report, nil
 }

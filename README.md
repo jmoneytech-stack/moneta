@@ -15,7 +15,7 @@ The post-review hardening stack in `docs/phase2-review-fix-pr-plan.md` closes th
 The `moneta link` and `moneta sync` commands run the connection and sync flows.
 `moneta status`, `moneta accounts`, `moneta tx`, `moneta spend`, `moneta cashflow`, `moneta networth`, and `moneta debts` emit TOON for agent consumers and are mirrored as authenticated JSON by `moneta serve`; Phase 2 CI is in place.
 Phase 3 is complete; compute-on-read analytics now include `moneta networth --history Nd`, the `mom`, `merchants`, `utilization`, `savings`, and `fixed-variable` trend metrics, the credit-card-only `moneta cards` view, and the composed `moneta dashboard`, without materialized analytics tables.
-Phase 4 through PR8 adds recurring detection and persistence, `moneta recurring`, `moneta bills`, compute-on-read `moneta anomalies`, their authenticated REST mirrors, and honest dashboard upcoming-bill population.
+Phase 4 is complete: recurring detection and persistence, `moneta recurring`, `moneta bills`, compute-on-read `moneta anomalies`, their authenticated REST mirrors, and honest dashboard bills and anomaly projections all ship.
 The approved design lives in [docs/moneta-plan.md](docs/moneta-plan.md) and the reasoning behind key choices in [docs/decisions/](docs/decisions/).
 
 ## Principles
@@ -374,8 +374,12 @@ upcoming_bills:
   bills[2]{date,name,amount,source,kind,date_source,due_status}:
     2026-07-25,Streambox Example,18,recurring,subscription,detected_schedule,upcoming
     2026-07-28,Travel Card,32,card_due,bill,provider_reported,upcoming
-anomalies: null
-phase4_note: anomalies are available in a later phase
+anomalies:
+  period: 2026-06
+  count: 1
+  top[1]{category,spend,baseline,deviation_ratio}:
+    Food and Drink,310,100,2.1
+  skipped_overflow: 0
 hint: run moneta spend or moneta trends for the breakdown behind these totals
 ```
 
@@ -390,8 +394,9 @@ It is `null` when no card qualifies, so a missing limit never reads as 0%.
 
 `upcoming_bills` is `null` when recurring detector status is `never_run` or `error`.
 For `ok` or `partial`, it contains the same 30-day `ReadBills` projection as `moneta bills`, capped to five rows while preserving the total count; no due rows render as an honest empty table with count zero.
-`anomalies` remains an explicit `null` placeholder because dashboard projection is reserved for Phase 4 PR9.
-The narrowed `phase4_note` states that remaining limitation inside the payload.
+`anomalies` always reports the default previous complete calendar month used by `moneta anomalies`.
+It preserves the full count and overflow-skip count while capping the ordered `top` table to three rows.
+An empty result is an honest object with its period, count zero, an empty table, and `skipped_overflow`; `phase4_note` has been removed because both Phase 4 slots now have definitive semantics.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 an Item needs reconnection.
 Exit 3 matches `moneta status`, and the full document still renders first so scripts can both detect the state and read the payload.
